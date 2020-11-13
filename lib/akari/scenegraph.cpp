@@ -11,3 +11,54 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <fstream>
+#include <akari/scenegraph.h>
+namespace akari::scene {
+    static size_t MAGIC = 0x78567856;
+    void Mesh::save_to_file(const std::string &file) const {
+        std::ofstream out(file, std::ios::binary);
+        size_t m = MAGIC;
+        out.write((const char *)&m, sizeof(m));
+        size_t vert_count = vertices.size();
+        size_t face_count = indices.size();
+        int8_t has_tc = !texcoords.empty();
+        out.write((const char *)&vert_count, sizeof(vert_count));
+        out.write((const char *)&face_count, sizeof(face_count));
+        out.write((const char *)&has_tc, sizeof(has_tc));
+        out.write((const char *)vertices.data(), sizeof(vec3) * vertices.size());
+        out.write((const char *)normals.data(), sizeof(vec3) * normals.size());
+        out.write((const char *)indices.data(), sizeof(ivec3) * indices.size());
+        if (has_tc)
+            out.write((const char *)texcoords.data(), sizeof(vec2) * texcoords.size());
+        out.write((const char *)&m, sizeof(m));
+    }
+    void Mesh::load() {
+        std::ifstream in(path, std::ios::binary);
+        size_t m = 0;
+        in.read((char *)&m, sizeof(m));
+        AKR_ASSERT(m == MAGIC);
+        size_t vert_count;
+        size_t face_count;
+        int8_t has_tc = false;
+        in.read((char *)&vert_count, sizeof(vert_count));
+        in.read((char *)&face_count, sizeof(face_count));
+        in.read((char *)&has_tc, sizeof(has_tc));
+        vertices.resize(vert_count);
+        normals.resize(vert_count);
+        indices.resize(face_count);
+        in.read((char *)vertices.data(), sizeof(vec3) * vertices.size());
+        in.read((char *)normals.data(), sizeof(vec3) * normals.size());
+        in.read((char *)indices.data(), sizeof(ivec3) * indices.size());
+        if (has_tc)
+            texcoords.resize(vert_count);
+        in.read((char *)texcoords.data(), sizeof(vec2) * texcoords.size());
+        in.read((char *)&m, sizeof(m));
+        AKR_ASSERT(m == MAGIC);
+    }
+    void Mesh::unload() {
+        vertices = std::vector<vec3>();
+        normals = std::vector<vec3>();
+        texcoords = std::vector<vec2>();
+        indices = std::vector<ivec3>();
+    }
+} // namespace akari::scene

@@ -97,7 +97,7 @@ namespace akari {
 #    endif
 #endif
     }
-#define AKR_PANIC(msg) panic(__FILE__, __LINE__, msg)
+#define AKR_PANIC(msg) akari::panic(__FILE__, __LINE__, msg)
 #ifdef AKR_GPU_CODE
 #    define AKR_CHECK(expr)
 #else

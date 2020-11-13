@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
+#pragma once
 #include <variant>
 #include <vector>
 #include <optional>
@@ -426,7 +426,8 @@ namespace akari {
         Vec3 translation;
         Vec3 rotation;
         Vec3 scale = Vec3(1.0, 1.0, 1.0);
-
+        TRSTransform() = default;
+        TRSTransform(Vec3 t, Vec3 r, Vec3 s) : translation(t), rotation(r), scale(s) {}
         Transform operator()() const {
             Transform T;
             T = Transform::scale(scale);

@@ -35,25 +35,38 @@ namespace akari::scene {
         P<Texture> roughnes;
         AKR_SER(diffuse, specular, metallic, roughnes)
     };
-    class Mesh {
+    struct Mesh {
       public:
+        std::string name;
         std::vector<vec3> vertices;
         std::vector<ivec3> indices;
         std::vector<vec3> normals;
         std::vector<vec2> texcoords;
         std::string path;
-        AKR_SER(path)
+        AKR_SER(name, path)
+
+        void save_to_file(const std::string &file) const;
+        void load();
+        void unload();
     };
+
     class Instance {
       public:
         TRSTransform transform;
         P<Mesh> mesh;
         P<Material> material;
-        std::vector<P<Instance>> children;
-        AKR_SER(transform, mesh, material, children)
+        AKR_SER(transform, mesh, material)
+    };
+    class Node {
+      public:
+        TRSTransform transform;
+        std::vector<P<Instance>> instances;
+        std::vector<P<Node>> children;
+        AKR_SER(transform, instances, children)
     };
     class SceneGraph {
       public:
+        P<Node> root;
         std::vector<P<Mesh>> meshes;
         std::vector<P<Instance>> instances;
         AKR_SER(meshes, instances)

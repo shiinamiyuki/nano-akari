@@ -17,6 +17,8 @@
 #include <pybind11/stl_bind.h>
 #include <akari/scenegraph.h>
 #include <cereal/archives/json.hpp>
+#include <cereal/archives/xml.hpp>
+#include <cereal/archives/binary.hpp>
 #include <cereal/types/memory.hpp>
 #include <cereal/types/vector.hpp>
 
@@ -104,6 +106,21 @@ namespace akari::python {
         m.def("load_json", [](const std::string &s) -> P<SceneGraph> {
             std::istringstream in(s);
             cereal::JSONInputArchive ar(in);
+            P<SceneGraph> scene;
+            ar(scene);
+            return scene;
+        });
+        m.def("save_xml", [](P<SceneGraph> scene) -> std::string {
+            std::ostringstream os;
+            {
+                cereal::XMLOutputArchive ar(os);
+                ar(scene);
+            }
+            return os.str();
+        });
+        m.def("load_xml", [](const std::string &s) -> P<SceneGraph> {
+            std::istringstream in(s);
+            cereal::XMLInputArchive ar(in);
             P<SceneGraph> scene;
             ar(scene);
             return scene;

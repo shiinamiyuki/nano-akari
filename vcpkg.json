@@ -1,0 +1,12 @@
+{
+    "name": "nano-akari",
+    "version-string": "0.1.0-dev",
+    "dependencies": [
+        "OpenImageIO",
+        "glm",
+        "cereal",
+        "assimp",
+        "spdlog",
+        "pybind11"
+      ]
+  }

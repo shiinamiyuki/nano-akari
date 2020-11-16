@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <akari/scenegraph.h>
 #include <akari/render.h>
+#include <spdlog/spdlog.h>
 #include <embree3/rtcore.h>
 namespace akari::render {
     static inline RTCRay toRTCRay(const Ray &_ray) {
@@ -41,6 +42,7 @@ namespace akari::render {
       public:
         EmbreeAccelImpl() { device = rtcNewDevice(nullptr); }
         void build(const std::shared_ptr<scene::SceneGraph> &scene) override {
+            spdlog::info("building acceleration structure for {} meshes", scene->meshes.size());
             if (rtcScene) {
                 rtcReleaseScene(rtcScene);
             }
@@ -102,5 +104,5 @@ namespace akari::render {
             rtcReleaseDevice(device);
         }
     };
-    std::shared_ptr<EmbreeAccel> create_embree_accel();
+    std::shared_ptr<EmbreeAccel> create_embree_accel() { return std::make_shared<EmbreeAccelImpl>(); }
 } // namespace akari::render

@@ -18,11 +18,7 @@
 #include <fstream>
 #include <akari/util.h>
 #include <akari/scenegraph.h>
-#include <cereal/types/memory.hpp>
-#include <cereal/types/vector.hpp>
-#include <cereal/archives/json.hpp>
-// #include <cereal/archives/xml.hpp>
-// #include <cereal/archives/binary.hpp>
+#include <akari/serial.h>
 using namespace akari::scene;
 using akari::Spectrum;
 P<SceneGraph> import(const std::string &file) {
@@ -99,6 +95,7 @@ P<SceneGraph> import(const std::string &file) {
         }
         return node;
     };
+    scene->camera.reset(new PerspectiveCamera());
     scene->meshes = meshes;
     scene->root = create_node(ai_scene->mRootNode, create_node);
     printf("imported %zd meshes\n", scene->meshes.size());

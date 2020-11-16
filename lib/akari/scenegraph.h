@@ -14,6 +14,7 @@
 #pragma once
 #include <akari/util.h>
 #include <akari/macro.h>
+#include <cereal/cereal.hpp>
 namespace akari::scene {
 
     template <typename T>
@@ -37,10 +38,11 @@ namespace akari::scene {
         P<Texture> specular;
         P<Texture> metallic;
         P<Texture> roughnes;
-        void commit(){}
+        void commit() {}
         AKR_SER(diffuse, specular, metallic, roughnes)
     };
     struct Mesh {
+        bool loaded = false;
       public:
         std::string name;
         std::vector<vec3> vertices;
@@ -77,7 +79,7 @@ namespace akari::scene {
     };
 #define AKR_DECL_RTTI(Class)                                                                                           \
     template <class T>                                                                                                 \
-    bool isa(const T *ptr) const {                                                                                     \
+    bool isa() const {                                                                                                 \
         return type() == T::static_type;                                                                               \
     }                                                                                                                  \
     template <class T>                                                                                                 \
@@ -97,33 +99,17 @@ namespace akari::scene {
         AKR_DECL_RTTI(Camera)
         virtual Type type() const = 0;
         TRSTransform transform;
-        template <class Archive>
-        void save(Archive &archive) const;
-        template <class Archive>
-        void load(Archive &archive);
+        ivec2 resolution = ivec2(512, 512);
+        AKR_SER(transform, resolution)
     };
     class PerspectiveCamera final : public Camera {
       public:
         AKR_DECL_TYPEID(PerspectiveCamera, Perspective)
-        Float fov = glm::degrees(80.0);
+        Float fov = glm::radians(80.0);
         Float lens_radius = 0.0;
         Float focal_distance = 0.0;
-        AKR_SER(fov, lens_radius, focal_distance)
+        AKR_SER_POLY(Camera, fov, lens_radius, focal_distance)
     };
-    template <class Archive>
-    void Camera::save(Archive &archive) const {
-        AKR_SER_MULT(transform);
-        if (auto perspective = as<PerspectiveCamera>()) {
-            perspective->save(archive);
-        }
-    }
-    template <class Archive>
-    void Camera::load(Archive &archive) {
-        AKR_SER_MULT(transform);
-        if (auto perspective = as<PerspectiveCamera>()) {
-            perspective->load(archive);
-        }
-    }
     class SceneGraph {
       public:
         P<Camera> camera;

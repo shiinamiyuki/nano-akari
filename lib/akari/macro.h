@@ -37,4 +37,15 @@ namespace akari {
     void load(Archive &ar) {                                                                                           \
         AKR_SER_MULT(__VA_ARGS__)                                                                                      \
     }
+#define AKR_SER_POLY(Base, ...)                                                                                        \
+    template <class Archive>                                                                                           \
+    void save(Archive &ar) const {                                                                                     \
+        ar(CEREAL_NVP_(#Base, cereal::base_class<Base>(this)));                                                        \
+        AKR_SER_MULT(__VA_ARGS__)                                                                                      \
+    }                                                                                                                  \
+    template <class Archive>                                                                                           \
+    void load(Archive &ar) {                                                                                           \
+        ar(CEREAL_NVP_(#Base, cereal::base_class<Base>(this)));                                                        \
+        AKR_SER_MULT(__VA_ARGS__)                                                                                      \
+    }
 } // namespace akari

@@ -17,10 +17,7 @@
 #include <akari/scenegraph.h>
 #include <akari/render.h>
 #include <akari/thread.h>
-#include <cereal/cereal.hpp>
-#include <cereal/archives/json.hpp>
-#include <cereal/types/memory.hpp>
-#include <cereal/types/vector.hpp>
+#include <akari/serial.h>
 int main(int argc, char **argv) {
     using namespace akari;
     thread::init(std::thread::hardware_concurrency());
@@ -38,9 +35,8 @@ int main(int argc, char **argv) {
             ar(scene_graph);
         }
         {
-            render::Scene scene;
-            scene.camera = render::PerspectiveCamera(ivec2(512, 512), Transform(), 0.0);
-            auto film = render::render_pt(scene);
+            auto scene = render::create_scene(scene_graph);
+            auto film = render::render_pt(*scene);
             auto image = film.to_rgb_image();
             write_ldr(image, "out.png");
         }

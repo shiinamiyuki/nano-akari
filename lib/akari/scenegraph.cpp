@@ -33,6 +33,8 @@ namespace akari::scene {
         out.write((const char *)&m, sizeof(m));
     }
     void Mesh::load() {
+        if (loaded)
+            return;
         std::ifstream in(path, std::ios::binary);
         size_t m = 0;
         in.read((char *)&m, sizeof(m));
@@ -54,15 +56,17 @@ namespace akari::scene {
         in.read((char *)texcoords.data(), sizeof(vec2) * texcoords.size());
         in.read((char *)&m, sizeof(m));
         AKR_ASSERT(m == MAGIC);
+        loaded = true;
     }
     void Mesh::unload() {
         vertices = std::vector<vec3>();
         normals = std::vector<vec3>();
         texcoords = std::vector<vec2>();
         indices = std::vector<ivec3>();
+        loaded = false;
     }
-    void SceneGraph::commit(){
-        for(auto & mesh:meshes){
+    void SceneGraph::commit() {
+        for (auto &mesh : meshes) {
             mesh->load();
         }
     }

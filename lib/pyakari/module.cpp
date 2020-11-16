@@ -12,15 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <fstream>
 #include <sstream>
 #include <pyakari/module.h>
 #include <pybind11/stl_bind.h>
-#include <akari/scenegraph.h>
-#include <cereal/archives/json.hpp>
-#include <cereal/archives/xml.hpp>
-#include <cereal/archives/binary.hpp>
-#include <cereal/types/memory.hpp>
-#include <cereal/types/vector.hpp>
+#include <akari/serial.h>
 
 PYBIND11_MAKE_OPAQUE(std::vector<akari::scene::P<akari::scene::Mesh>>);
 PYBIND11_MAKE_OPAQUE(std::vector<akari::scene::P<akari::scene::Instance>>);
@@ -114,8 +110,9 @@ namespace akari::python {
             .def(py::init<>())
             .def_readwrite("meshes", &SceneGraph::meshes)
             .def_readwrite("root", &SceneGraph::root)
+            .def_readwrite("camera", &SceneGraph::camera)
             .def_readwrite("instances", &SceneGraph::instances);
-        m.def("save_json", [](P<SceneGraph> scene) -> std::string {
+        m.def("save_json_str", [](P<SceneGraph> scene) -> std::string {
             std::ostringstream os;
             {
                 cereal::JSONOutputArchive ar(os);
@@ -123,14 +120,14 @@ namespace akari::python {
             }
             return os.str();
         });
-        m.def("load_json", [](const std::string &s) -> P<SceneGraph> {
+        m.def("load_json_str", [](const std::string &s) -> P<SceneGraph> {
             std::istringstream in(s);
             cereal::JSONInputArchive ar(in);
             P<SceneGraph> scene;
             ar(scene);
             return scene;
         });
-        m.def("save_xml", [](P<SceneGraph> scene) -> std::string {
+        m.def("save_xml_str", [](P<SceneGraph> scene) -> std::string {
             std::ostringstream os;
             {
                 cereal::XMLOutputArchive ar(os);
@@ -138,12 +135,46 @@ namespace akari::python {
             }
             return os.str();
         });
-        m.def("load_xml", [](const std::string &s) -> P<SceneGraph> {
+        m.def("load_xml_str", [](const std::string &s) -> P<SceneGraph> {
             std::istringstream in(s);
             cereal::XMLInputArchive ar(in);
             P<SceneGraph> scene;
             ar(scene);
             return scene;
+        });
+        m.def("load", [](const std::string &s) -> P<SceneGraph> {
+            auto path = fs::path(s);
+            P<SceneGraph> scene;
+            if (path.extension() == ".json") {
+                std::ifstream in(path);
+                cereal::JSONInputArchive ar(in);
+                ar(scene);
+            } else if (path.extension() == ".xml") {
+                std::ifstream in(path);
+                cereal::XMLInputArchive ar(in);
+                ar(scene);
+            } else {
+                std::ifstream in(path, std::ios::binary);
+                cereal::BinaryInputArchive ar(in);
+                ar(scene);
+            }
+            return scene;
+        });
+        m.def("save", [](const P<SceneGraph> &scene, const std::string &s) {
+            auto path = fs::path(s);
+            if (path.extension() == ".json") {
+                std::ofstream out(path);
+                cereal::JSONOutputArchive ar(out);
+                ar(scene);
+            } else if (path.extension() == ".xml") {
+                std::ofstream out(path);
+                cereal::XMLOutputArchive ar(out);
+                ar(scene);
+            } else {
+                std::ofstream out(path, std::ios::binary);
+                cereal::BinaryOutputArchive ar(out);
+                ar(scene);
+            }
         });
         py::bind_vector<std::vector<P<Mesh>>>(m, "MeshArray");
         py::bind_vector<std::vector<P<Instance>>>(m, "InstanceArray");

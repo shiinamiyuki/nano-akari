@@ -14,12 +14,22 @@
 
 #include <akari/util.h>
 #include <akari/render.h>
-
+#include <spdlog/spdlog.h>
 namespace akari::render {
-    Film render_pt(const Scene &scene) {
-        Film film(scene.camera.resolution());
-        thread::parallel_for(thread::blocked_range<2>(film.resolution(), ivec2(16, 16)),
-                             [&](ivec2 id, uint32_t tid) { film.add_sample(id, Spectrum(1.0), 1.0); });
-        return film;
+    std::shared_ptr<const Scene> create_scene(const std::shared_ptr<scene::SceneGraph> &scene_graph) {
+        scene_graph->commit();
+        std::shared_ptr<Scene> scene(new Scene());
+        scene->camera = [&] {
+            Camera camera;
+            if (auto perspective = scene_graph->camera->as<scene::PerspectiveCamera>()) {
+                TRSTransform TRS{perspective->transform.translation, perspective->transform.rotation, Vec3(1.0)};
+                auto c2w = TRS();
+                camera = PerspectiveCamera(perspective->resolution, c2w, perspective->fov);
+            }
+            return camera;
+        }();
+        scene->accel = create_embree_accel();
+        scene->accel->build(scene_graph);
+        return scene;
     }
 } // namespace akari::render

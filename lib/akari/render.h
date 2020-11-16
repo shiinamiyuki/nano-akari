@@ -584,9 +584,12 @@ namespace akari::render {
         }
     };
 
+    class EmbreeAccel;
+    
     struct Scene {
         Camera camera;
         std::vector<MeshInstance> instances;
+        std::shared_ptr<EmbreeAccel> accel;
     };
 
     struct Intersection {
@@ -603,5 +606,6 @@ namespace akari::render {
     };
     std::shared_ptr<EmbreeAccel> create_embree_accel();
 
+    std::shared_ptr<const Scene> create_scene(const std::shared_ptr<scene::SceneGraph> &scene_graph);
     Film render_pt(const Scene &scene);
 } // namespace akari::render

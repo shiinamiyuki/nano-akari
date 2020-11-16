@@ -15,16 +15,34 @@
 #include <assimp/Importer.hpp> // C++ importer interface
 #include <assimp/scene.h>      // Output data structure
 #include <assimp/postprocess.h>
+#include <fstream>
 #include <akari/util.h>
 #include <akari/scenegraph.h>
+#include <cereal/types/memory.hpp>
+#include <cereal/types/vector.hpp>
+#include <cereal/archives/json.hpp>
+// #include <cereal/archives/xml.hpp>
+// #include <cereal/archives/binary.hpp>
 using namespace akari::scene;
+using akari::Spectrum;
 P<SceneGraph> import(const std::string &file) {
+    auto create_vec = [&](aiVector3D v) -> glm::vec3 { return glm::vec3(v[0], v[1], v[2]); };
+    auto color4_to_spectrum = [&](aiColor4D v) -> Spectrum { return Spectrum(v[0], v[1], v[2]); };
     Assimp::Importer importer;
     const aiScene *ai_scene =
         importer.ReadFile(file, aiProcess_CalcTangentSpace | aiProcess_Triangulate | aiProcess_GenSmoothNormals |
                                     aiProcess_JoinIdenticalVertices | aiProcess_SortByPType);
     P<SceneGraph> scene(new SceneGraph());
+    std::vector<P<Material>> materials((size_t)ai_scene->mNumMaterials);
     std::vector<P<Mesh>> meshes((size_t)ai_scene->mNumMeshes);
+    for (uint32_t i = 0; i < ai_scene->mNumMaterials; i++) {
+        const aiMaterial *ai_mat = ai_scene->mMaterials[i];
+        aiColor4D diffuse_color;
+        aiGetMaterialColor(ai_mat, AI_MATKEY_COLOR_DIFFUSE, &diffuse_color);
+        auto mat = P<Material>(new Material());
+        mat->diffuse = P<Texture>(new Texture(color4_to_spectrum(diffuse_color)));
+        materials[i] = mat;
+    }
     for (uint32_t i = 0; i < ai_scene->mNumMeshes; i++) {
         const aiMesh *ai_mesh = ai_scene->mMeshes[i];
         if (!(ai_mesh->mPrimitiveTypes & aiPrimitiveType_TRIANGLE)) {
@@ -61,7 +79,7 @@ P<SceneGraph> import(const std::string &file) {
         }
         meshes[i] = mesh;
     }
-    auto create_vec = [&](aiVector3D v) -> glm::vec3 { return glm::vec3(v[0], v[1], v[2]); };
+
     auto create_transform = [&](aiMatrix4x4 m) -> akari::TRSTransform {
         aiVector3D t, r, s;
         m.Decompose(s, r, t);
@@ -76,13 +94,14 @@ P<SceneGraph> import(const std::string &file) {
             P<Instance> instance(new Instance());
             instance->transform = create_transform(ai_node->mTransformation);
             instance->mesh = meshes[ai_node->mMeshes[i]];
+            instance->material = materials[ai_scene->mMeshes[ai_node->mMeshes[i]]->mMaterialIndex];
             node->instances.emplace_back(instance);
         }
         return node;
     };
     scene->meshes = meshes;
     scene->root = create_node(ai_scene->mRootNode, create_node);
-    printf("imported %zd meshes\n",scene->meshes.size());
+    printf("imported %zd meshes\n", scene->meshes.size());
     return scene;
 }
 void save(const P<SceneGraph> &scene, std::string dir) {
@@ -96,11 +115,12 @@ void save(const P<SceneGraph> &scene, std::string dir) {
 }
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: akari-import file output-dir\n");
+        fprintf(stderr, "usage: akari-import file scene-file output-dir\n");
         exit(1);
     }
     std::string file(argv[1]);
-    std::string out_dir(argv[2]);
+    std::string scene_file(argv[2]);
+    std::string out_dir(argv[3]);
     using namespace akari;
     if (fs::exists(out_dir) && !fs::is_empty(out_dir)) {
         fprintf(stderr, "folder %s already exists and is not empty\n", out_dir.c_str());
@@ -111,5 +131,10 @@ int main(int argc, char **argv) {
     }
     auto scene = import(file);
     save(scene, out_dir);
+    {
+        std::ofstream os(scene_file);
+        cereal::JSONOutputArchive ar(os);
+        ar(scene);
+    }
     printf("done importing\n");
 }

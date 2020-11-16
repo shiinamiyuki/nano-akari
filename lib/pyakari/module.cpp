@@ -24,6 +24,7 @@
 
 PYBIND11_MAKE_OPAQUE(std::vector<akari::scene::P<akari::scene::Mesh>>);
 PYBIND11_MAKE_OPAQUE(std::vector<akari::scene::P<akari::scene::Instance>>);
+PYBIND11_MAKE_OPAQUE(std::vector<akari::scene::P<akari::scene::Node>>);
 namespace akari::python {
 
     template <typename T, int N>
@@ -78,7 +79,12 @@ namespace akari::python {
             .def_readwrite("translation", &TRSTransform::translation)
             .def_readwrite("rotation", &TRSTransform::rotation)
             .def_readwrite("scale", &TRSTransform::scale);
-
+        py::class_<Camera, P<Camera>>(m, "Camera").def_readwrite("transform", &Camera::transform);
+        py::class_<PerspectiveCamera, Camera, P<PerspectiveCamera>>(m, "PerspectiveCamera")
+            .def(py::init<>())
+            .def_readwrite("fov", &PerspectiveCamera::fov)
+            .def_readwrite("lens_radius", &PerspectiveCamera::lens_radius)
+            .def_readwrite("focal_distance", &PerspectiveCamera::focal_distance);
         py::class_<Texture, P<Texture>>(m, "Texture")
             .def(py::init<>())
             .def("set_image_texture", &Texture::set_image_texture)
@@ -90,10 +96,24 @@ namespace akari::python {
             .def_readwrite("specular", &Material::specular)
             .def_readwrite("metallic", &Material::metallic)
             .def_readwrite("roughnes", &Material::roughnes);
-        py::class_<Instance, P<Instance>>(m, "Instance").def(py::init<>());
+        py::class_<Instance, P<Instance>>(m, "Instance")
+            .def(py::init<>())
+            .def_readwrite("transform", &Instance::transform)
+            .def_readwrite("material", &Instance::material)
+            .def_readwrite("mesh", &Instance::mesh);
+        py::class_<Mesh, P<Mesh>>(m, "Mesh")
+            .def(py::init<>())
+            .def_readwrite("name", &Mesh::name)
+            .def_readwrite("path", &Mesh::path);
+        py::class_<Node, P<Node>>(m, "Node")
+            .def(py::init<>())
+            .def_readwrite("transform", &Node::transform)
+            .def_readwrite("instances", &Node::instances)
+            .def_readwrite("children", &Node::children);
         py::class_<SceneGraph, P<SceneGraph>>(m, "SceneGraph")
             .def(py::init<>())
             .def_readwrite("meshes", &SceneGraph::meshes)
+            .def_readwrite("root", &SceneGraph::root)
             .def_readwrite("instances", &SceneGraph::instances);
         m.def("save_json", [](P<SceneGraph> scene) -> std::string {
             std::ostringstream os;
@@ -127,6 +147,7 @@ namespace akari::python {
         });
         py::bind_vector<std::vector<P<Mesh>>>(m, "MeshArray");
         py::bind_vector<std::vector<P<Instance>>>(m, "InstanceArray");
+        py::bind_vector<std::vector<P<Node>>>(m, "NodeArray");
     }
 } // namespace akari::python
 

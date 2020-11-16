@@ -13,13 +13,17 @@
 // limitations under the License.
 
 #include <akari/util.h>
-
+#include <akari/macro.h>
 namespace akari::scene {
 
     template <typename T>
     using P = std::shared_ptr<T>;
     class Texture {
       public:
+        Texture() : value(0.0) {}
+        Texture(Float v) : value(v) {}
+        Texture(Spectrum s) : value(s) {}
+        Texture(std::string s) : value(s) {}
         std::variant<Float, Spectrum, std::string> value;
         AKR_SER(value)
         void clear() { value = Float(0.0); }
@@ -64,11 +68,61 @@ namespace akari::scene {
         std::vector<P<Node>> children;
         AKR_SER(transform, instances, children)
     };
+#define AKR_DECL_RTTI(Class)                                                                                           \
+    template <class T>                                                                                                 \
+    bool isa(const T *ptr) const {                                                                                     \
+        return type() == T::static_type;                                                                               \
+    }                                                                                                                  \
+    template <class T>                                                                                                 \
+    const T *as() const {                                                                                              \
+        return isa<T>() ? dynamic_cast<const T *>(this) : nullptr;                                                     \
+    }                                                                                                                  \
+    template <class T>                                                                                                 \
+    T *as() {                                                                                                          \
+        return isa<T>() ? dynamic_cast<T *>(this) : nullptr;                                                           \
+    }
+#define AKR_DECL_TYPEID(Class, TypeId)                                                                                 \
+    static const Type static_type = Type::TypeId;                                                                      \
+    Type type() const override { return Type::TypeId; }
+    class Camera {
+      public:
+        enum class Type { Perspective };
+        AKR_DECL_RTTI(Camera)
+        virtual Type type() const = 0;
+        TRSTransform transform;
+        template <class Archive>
+        void save(Archive &archive) const;
+        template <class Archive>
+        void load(Archive &archive);
+    };
+    class PerspectiveCamera final : public Camera {
+      public:
+        AKR_DECL_TYPEID(PerspectiveCamera, Perspective)
+        Float fov = glm::degrees(80.0);
+        Float lens_radius = 0.0;
+        Float focal_distance = 0.0;
+        AKR_SER(fov, lens_radius, focal_distance)
+    };
+    template <class Archive>
+    void Camera::save(Archive &archive) const {
+        AKR_SER_MULT(transform);
+        if (auto perspective = as<PerspectiveCamera>()) {
+            perspective->save(archive);
+        }
+    }
+    template <class Archive>
+    void Camera::load(Archive &archive) {
+        AKR_SER_MULT(transform);
+        if (auto perspective = as<PerspectiveCamera>()) {
+            perspective->load(archive);
+        }
+    }
     class SceneGraph {
       public:
+        P<Camera> camera;
         P<Node> root;
         std::vector<P<Mesh>> meshes;
         std::vector<P<Instance>> instances;
-        AKR_SER(meshes, instances)
+        AKR_SER(camera, meshes, instances, root)
     };
 } // namespace akari::scene

@@ -33,16 +33,8 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <cereal/cereal.hpp>
 #include <akari/common.h>
+#include <akari/macro.h>
 
-#define AKR_SER(...)                                                                                                   \
-    template <class Archive>                                                                                           \
-    void save(Archive &ar) const {                                                                                     \
-        ar(__VA_ARGS__);                                                                                               \
-    }                                                                                                                  \
-    template <class Archive>                                                                                           \
-    void load(Archive &ar) {                                                                                           \
-        ar(__VA_ARGS__);                                                                                               \
-    }
 namespace akari {
     template <typename T, int N>
     struct Color;
@@ -108,6 +100,14 @@ namespace akari {
     template <typename V, typename V2>
     inline V lerp3(const V &v0, const V &v1, const V &v2, const V2 &uv) {
         return (1.0f - uv[0] - uv[1]) * v0 + uv[0] * v1 + uv[1] * v2;
+    }
+    template <typename V, typename V2>
+    inline V dlerp3du(const V &v0, const V &v1, const V &v2, V2 u) {
+        return -v0 + v1;
+    }
+    template <typename V, typename V2>
+    inline V dlerp3dv(const V &v0, const V &v1, const V &v2, V2 v) {
+        return -v0 + v2;
     }
     template <typename T, int N, class F>
     T reduce(const Vector<T, N> &vec, F &&f) {
@@ -300,7 +300,7 @@ namespace akari {
         AKR_SER(o, d, tmin, tmax)
     };
 
-    struct Frame {
+     struct Frame {
         Frame() = default;
         static inline void compute_local_frame(const vec3 &v1, vec3 *v2, vec3 *v3) {
             if (std::abs(v1.x) > std::abs(v1.y))
@@ -309,15 +309,17 @@ namespace akari {
                 *v2 = vec3((0), v1.z, -v1.y) / glm::sqrt(v1.y * v1.y + v1.z * v1.z);
             *v3 = normalize(cross(vec3(v1), *v2));
         }
-        explicit Frame(const vec3 &v) : normal(v) { compute_local_frame(v, &T, &B); }
+        explicit Frame(const vec3 &n) : n(n) { compute_local_frame(n, &s, &t); }
+        explicit Frame(const vec3 &n, const vec3 &dpdu) : n(n) {
+            s = glm::normalize(-n * glm::dot(n, dpdu) + dpdu);
+            t = glm::cross(n, s);
+        }
+        [[nodiscard]] vec3 world_to_local(const vec3 &v) const { return vec3(dot(s, v), dot(n, v), dot(t, v)); }
 
-        [[nodiscard]] vec3 world_to_local(const vec3 &v) const { return vec3(dot(T, v), dot(normal, v), dot(B, v)); }
+        [[nodiscard]] vec3 local_to_world(const vec3 &v) const { return vec3(v.x * s + v.y * vec3(n) + v.z * t); }
 
-        [[nodiscard]] vec3 local_to_world(const vec3 &v) const { return vec3(v.x * T + v.y * vec3(normal) + v.z * B); }
-
-        vec3 normal;
-        vec3 T, B;
-        AKR_SER(normal, T, B)
+        vec3 n;
+        vec3 s, t;
     };
 
     struct Transform {
@@ -452,13 +454,13 @@ namespace akari {
             T1 first;
             T2 second;
         };
-        template <typename T1, typename T2>
-        pair(T1 &&, T2 &&) -> pair<T1, T2>;
+        // template <typename T1, typename T2>
+        // pair(T1 &&, T2 &&) -> pair<T1, T2>;
 
-        template <typename T1, typename T2>
-        AKR_XPU pair<T1, T2> make_pair(T1 a, T2 b) {
-            return pair<T1, T2>{a, b};
-        }
+        // template <typename T1, typename T2>
+        // AKR_XPU pair<T1, T2> make_pair(T1 a, T2 b) {
+        //     return pair<T1, T2>{a, b};
+        // }
 
         struct nullopt_t {};
         inline constexpr nullopt_t nullopt{};
@@ -582,15 +584,15 @@ namespace akari {
             bool set = false;
         };
 
-        template <int I, typename T1, typename T2>
-        AKR_XPU const T1 &get(const pair<T1, T2> &p) {
-            static_assert(I >= 0 && I < 2);
-            if constexpr (I == 0) {
-                return p.first;
-            } else {
-                return p.second;
-            }
-        }
+        // template <int I, typename T1, typename T2>
+        // AKR_XPU const T1 &get(const pair<T1, T2> &p) {
+        //     static_assert(I >= 0 && I < 2);
+        //     if constexpr (I == 0) {
+        //         return p.first;
+        //     } else {
+        //         return p.second;
+        //     }
+        // }
         template <typename T>
         AKR_XPU inline void swap(T &a, T &b) {
             T tmp = std::move(a);
@@ -817,19 +819,23 @@ namespace akari {
     });
     };
 
-    template <typename T>
+     template <typename T>
     struct BufferView {
         BufferView() = default;
-        AKR_XPU BufferView(T *ptr, size_t s) : ptr(ptr), size_(s) {}
-        AKR_XPU BufferView(const T *ptr, size_t s) : ptr(ptr), size_(s) {}
-        AKR_XPU T *data() const { return ptr; }
-        AKR_XPU size_t size() const { return size_; }
-        AKR_XPU T *begin() const { return ptr; }
-        AKR_XPU T *end() const { return ptr; }
+        template <typename Allocator>
+        BufferView(const std::vector<T, Allocator> &vec) : _data(vec.data()), _size(vec.size()) {}
+        BufferView(T *data, size_t size) : _data(data), _size(size) {}
+        T &operator[](uint32_t i) const { return _data[i]; }
+        size_t size() const { return _size; }
+        T *begin() const { return _data; }
+        T *end() const { return _data + _size; }
+        const T *cbegin() const { return _data; }
+        const T *cend() const { return _data + _size; }
+        T *const &data() const { return _data; }
 
       private:
-        T *ptr = nullptr;
-        size_t size_ = 0u;
+        T *_data = nullptr;
+        size_t _size = 0;
     };
 } // namespace akari
 

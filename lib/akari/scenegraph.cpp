@@ -61,4 +61,9 @@ namespace akari::scene {
         texcoords = std::vector<vec2>();
         indices = std::vector<ivec3>();
     }
+    void SceneGraph::commit(){
+        for(auto & mesh:meshes){
+            mesh->load();
+        }
+    }
 } // namespace akari::scene

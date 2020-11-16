@@ -14,7 +14,8 @@
 
 #pragma once
 #include <akari/util.h>
-#include <akari/array.h>
+#include <akari/image.h>
+#include <akari/scenegraph.h>
 #include <array>
 namespace akari::scene {
     class SceneGraph;
@@ -273,6 +274,104 @@ namespace akari::render {
         return (microfacet_D(m, wh) * abs_cos_theta(wh));
     }
 #pragma endregion
+
+    template <class T>
+    struct TFilm {
+        Array2D<T> radiance;
+        Array2D<Float> weight;
+        explicit TFilm(const ivec2 &dimension) : radiance(dimension), weight(dimension) {}
+        void add_sample(const ivec2 &p, const T &sample, Float weight_) {
+            weight(p) += weight_;
+            radiance(p) += sample;
+        }
+        [[nodiscard]] ivec2 resolution() const { return radiance.dimension(); }
+        template <typename = std::enable_if_t<std::is_same_v<T, Color3f>>>
+        Image to_rgb_image() const {
+            Image image = rgb_image(resolution());
+            thread::parallel_for(resolution().y, [&](uint32_t y, uint32_t) {
+                for (int x = 0; x < resolution().x; x++) {
+                    if (weight(x, y) != 0) {
+                        auto color = (radiance(x, y)) / weight(x, y);
+                        image(x, y, 0) = color[0];
+                        image(x, y, 1) = color[1];
+                        image(x, y, 2) = color[2];
+                    } else {
+                        auto color = radiance(x, y);
+                        image(x, y, 0) = color[0];
+                        image(x, y, 1) = color[1];
+                        image(x, y, 2) = color[2];
+                    }
+                }
+            });
+            return image;
+        }
+    };
+    using Film = TFilm<Spectrum>;
+    struct CameraSample {
+        vec2 p_lens;
+        vec2 p_film;
+        Float weight = 0.0f;
+        Vec3 normal;
+        Ray ray;
+    };
+    struct PerspectiveCamera {
+        Transform c2w, w2c, r2c, c2r;
+        ivec2 _resolution;
+        Float fov;
+        Float lens_radius = 0.0f;
+        Float focal_distance = 0.0f;
+        PerspectiveCamera(const ivec2 &_resolution, const Transform &c2w, Float fov)
+            : c2w(c2w), w2c(c2w.inverse()), _resolution(_resolution), fov(fov) {
+            preprocess();
+        }
+        ivec2 resolution() const { return _resolution; }
+        CameraSample generate_ray(const vec2 &u1, const vec2 &u2, const ivec2 &raster) const {
+            CameraSample sample;
+            sample.p_lens = concentric_disk_sampling(u1) * lens_radius;
+            sample.p_film = vec2(raster) + u2;
+            sample.weight = 1;
+
+            vec2 p = shuffle<0, 1>(r2c.apply_point(Vec3(sample.p_film.x, sample.p_film.y, 0.0f)));
+            Ray ray(Vec3(0), Vec3(normalize(Vec3(p.x, p.y, 0) - Vec3(0, 0, 1))));
+            if (lens_radius > 0 && focal_distance > 0) {
+                Float ft = focal_distance / std::abs(ray.d.z);
+                Vec3 pFocus = ray(ft);
+                ray.o = Vec3(sample.p_lens.x, sample.p_lens.y, 0);
+                ray.d = Vec3(normalize(pFocus - ray.o));
+            }
+            ray.o = c2w.apply_point(ray.o);
+            ray.d = c2w.apply_vector(ray.d);
+            sample.normal = c2w.apply_normal(Vec3(0, 0, -1.0f));
+            sample.ray = ray;
+
+            return sample;
+        }
+
+      private:
+        void preprocess() {
+            Transform m;
+            m = Transform::scale(Vec3(1.0f / _resolution.x, 1.0f / _resolution.y, 1)) * m;
+            m = Transform::scale(Vec3(2, 2, 1)) * m;
+            m = Transform::translate(Vec3(-1, -1, 0)) * m;
+            m = Transform::scale(Vec3(1, -1, 1)) * m;
+            auto s = atan(fov / 2);
+            if (_resolution.x > _resolution.y) {
+                m = Transform::scale(Vec3(s, s * Float(_resolution.y) / _resolution.x, 1)) * m;
+            } else {
+                m = Transform::scale(Vec3(s * Float(_resolution.x) / _resolution.y, s, 1)) * m;
+            }
+            r2c = m;
+            c2r = r2c.inverse();
+        }
+    };
+    struct Camera : Variant<PerspectiveCamera> {
+        using Variant::Variant;
+        ivec2 resolution() const { AKR_VAR_DISPATCH(resolution); }
+        CameraSample generate_ray(const vec2 &u1, const vec2 &u2, const ivec2 &raster) const {
+            AKR_VAR_DISPATCH(generate_ray, u1, u2, raster);
+        }
+    };
+
     struct ConstantTexture {
         Spectrum value;
     };
@@ -486,6 +585,7 @@ namespace akari::render {
     };
 
     struct Scene {
+        Camera camera;
         std::vector<MeshInstance> instances;
     };
 
@@ -503,14 +603,5 @@ namespace akari::render {
     };
     std::shared_ptr<EmbreeAccel> create_embree_accel();
 
-    template <class T>
-    struct TFilm {
-        Array2D<T> radiance;
-        Array2D<Float> weight;
-        void add_sample(const ivec2 &p, const T &sample, Float weight_) {
-            weight(p) += weight_;
-            radiance(p) += sample;
-        }
-    };
-    using Film = TFilm<Spectrum>;
+    Film render_pt(const Scene &scene);
 } // namespace akari::render

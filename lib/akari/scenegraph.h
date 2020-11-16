@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
+#pragma once
 #include <akari/util.h>
 #include <akari/macro.h>
 namespace akari::scene {
@@ -37,6 +37,7 @@ namespace akari::scene {
         P<Texture> specular;
         P<Texture> metallic;
         P<Texture> roughnes;
+        void commit(){}
         AKR_SER(diffuse, specular, metallic, roughnes)
     };
     struct Mesh {
@@ -59,6 +60,7 @@ namespace akari::scene {
         TRSTransform transform;
         P<Mesh> mesh;
         P<Material> material;
+        void commit() { material->commit(); }
         AKR_SER(transform, mesh, material)
     };
     class Node {
@@ -66,6 +68,11 @@ namespace akari::scene {
         TRSTransform transform;
         std::vector<P<Instance>> instances;
         std::vector<P<Node>> children;
+        void commit() {
+            for (auto &child : children) {
+                child->commit();
+            }
+        }
         AKR_SER(transform, instances, children)
     };
 #define AKR_DECL_RTTI(Class)                                                                                           \
@@ -123,6 +130,7 @@ namespace akari::scene {
         P<Node> root;
         std::vector<P<Mesh>> meshes;
         std::vector<P<Instance>> instances;
+        void commit();
         AKR_SER(camera, meshes, instances, root)
     };
 } // namespace akari::scene

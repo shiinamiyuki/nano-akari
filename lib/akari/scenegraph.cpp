@@ -13,6 +13,7 @@
 // limitations under the License.
 #include <fstream>
 #include <akari/scenegraph.h>
+#include <spdlog/spdlog.h>
 namespace akari::scene {
     static size_t MAGIC = 0x78567856;
     void Mesh::save_to_file(const std::string &file) const {
@@ -35,6 +36,7 @@ namespace akari::scene {
     void Mesh::load() {
         if (loaded)
             return;
+        spdlog::info("loading {}", path);
         std::ifstream in(path, std::ios::binary);
         size_t m = 0;
         in.read((char *)&m, sizeof(m));
@@ -51,9 +53,10 @@ namespace akari::scene {
         in.read((char *)vertices.data(), sizeof(vec3) * vertices.size());
         in.read((char *)normals.data(), sizeof(vec3) * normals.size());
         in.read((char *)indices.data(), sizeof(ivec3) * indices.size());
-        if (has_tc)
+        if (has_tc) {
             texcoords.resize(vert_count);
-        in.read((char *)texcoords.data(), sizeof(vec2) * texcoords.size());
+            in.read((char *)texcoords.data(), sizeof(vec2) * texcoords.size());
+        }
         in.read((char *)&m, sizeof(m));
         AKR_ASSERT(m == MAGIC);
         loaded = true;

@@ -38,43 +38,55 @@ namespace akari::render {
         RTCScene rtcScene = nullptr;
         RTCDevice device = nullptr;
         std::unordered_map<const Mesh *, RTCScene> per_mesh_scene;
-
+#define EMBREE_CHECK(expr)                                                                                             \
+    [&] {                                                                                                              \
+        expr;                                                                                                          \
+        auto err = rtcGetDeviceError(device);                                                                          \
+        if (err != RTC_ERROR_NONE) {                                                                                   \
+            spdlog::error("embree error: {}", err);                                                                    \
+        }                                                                                                              \
+    }()
       public:
         EmbreeAccelImpl() { device = rtcNewDevice(nullptr); }
-        void build(const std::shared_ptr<scene::SceneGraph> &scene) override {
-            spdlog::info("building acceleration structure for {} meshes", scene->meshes.size());
+        void build(const Scene &scene, const std::shared_ptr<scene::SceneGraph> &scene_graph) override {
+            spdlog::info("building acceleration structure for {} meshes, {} instances", scene_graph->meshes.size(),
+                         scene.instances.size());
             if (rtcScene) {
                 rtcReleaseScene(rtcScene);
             }
             rtcScene = rtcNewScene(device);
-            for (auto &mesh : scene->meshes) {
+            for (auto &mesh : scene_graph->meshes) {
                 const auto m_scene = rtcNewScene(device);
                 {
                     const auto geometry = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_TRIANGLE);
-                    rtcSetSharedGeometryBuffer(geometry, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT3,
-                                               &mesh->vertices[0], 0, sizeof(float) * 3, mesh->vertices.size());
+                    AKR_ASSERT(mesh->vertices.data() != nullptr);
+                    EMBREE_CHECK(rtcSetSharedGeometryBuffer(geometry, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT3,
+                                                            &mesh->vertices[0], 0, sizeof(float) * 3,
+                                                            mesh->vertices.size()));
                     AKR_ASSERT_THROW(rtcGetDeviceError(device) == RTC_ERROR_NONE);
-                    rtcSetSharedGeometryBuffer(geometry, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT3, &mesh->indices[0],
-                                               0, sizeof(int) * 3, mesh->indices.size());
+                    EMBREE_CHECK(rtcSetSharedGeometryBuffer(geometry, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT3,
+                                                            &mesh->indices[0], 0, sizeof(int) * 3,
+                                                            mesh->indices.size()));
                     AKR_ASSERT_THROW(rtcGetDeviceError(device) == RTC_ERROR_NONE);
-                    rtcCommitGeometry(geometry);
-                    rtcAttachGeometry(m_scene, geometry);
-                    rtcReleaseGeometry(geometry);
+                    EMBREE_CHECK(rtcCommitGeometry(geometry));
+                    EMBREE_CHECK(rtcAttachGeometry(m_scene, geometry));
+                    EMBREE_CHECK(rtcReleaseGeometry(geometry));
+                    EMBREE_CHECK(rtcCommitScene(m_scene));
                 }
                 per_mesh_scene[mesh.get()] = m_scene;
             }
-            auto recursive_build = [&](Transform parent_transform, P<scene::Node> node, auto &&self) {
-                Transform node_T = parent_transform * node->transform();
-                for (auto &instance : node->instances) {
-                    Transform T = node_T * instance->transform();
-                    const auto geometry = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_INSTANCE);
-                    rtcSetGeometryTransform(geometry, 0, RTC_FORMAT_FLOAT4X4_COLUMN_MAJOR, &T.m);
-                    rtcCommitGeometry(geometry);
-                    rtcAttachGeometry(rtcScene, geometry);
-                    rtcReleaseGeometry(geometry);
-                }
-            };
-            recursive_build(Transform(), scene->root, recursive_build);
+            unsigned int id = 0;
+            for (auto instance : scene.instances) {
+                const auto geometry = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_INSTANCE);
+                EMBREE_CHECK(rtcSetGeometryInstancedScene(geometry, per_mesh_scene.at(instance.mesh)));
+                EMBREE_CHECK(
+                    rtcSetGeometryTransform(geometry, 0, RTC_FORMAT_FLOAT4X4_COLUMN_MAJOR, &instance.transform.m));
+                EMBREE_CHECK(rtcCommitGeometry(geometry));
+                EMBREE_CHECK(rtcAttachGeometryByID(rtcScene, geometry, id));
+                EMBREE_CHECK(rtcReleaseGeometry(geometry));
+                id++;
+            }
+            EMBREE_CHECK(rtcCommitScene(rtcScene));
         }
         std::optional<Intersection> intersect1(const Ray &ray) const override {
             RTCRayHit rayHit;

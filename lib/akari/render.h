@@ -274,7 +274,58 @@ namespace akari::render {
         return (microfacet_D(m, wh) * abs_cos_theta(wh));
     }
 #pragma endregion
+    struct Rng {
+        Rng(uint64_t sequence = 0) { pcg32_init(sequence); }
+        uint32_t uniform_u32() { return pcg32(); }
+        double uniform_float() { return pcg32() / double(0xffffffff); }
 
+      private:
+        uint64_t state = 0x4d595df4d0f33173; // Or something seed-dependent
+        static uint64_t const multiplier = 6364136223846793005u;
+        static uint64_t const increment = 1442695040888963407u; // Or an arbitrary odd constant
+        static uint32_t rotr32(uint32_t x, unsigned r) { return x >> r | x << (-r & 31); }
+        uint32_t pcg32(void) {
+            uint64_t x = state;
+            unsigned count = (unsigned)(x >> 59); // 59 = 64 - 5
+
+            state = x * multiplier + increment;
+            x ^= x >> 18;                              // 18 = (64 - 27)/2
+            return rotr32((uint32_t)(x >> 27), count); // 27 = 32 - 5
+        }
+        void pcg32_init(uint64_t seed) {
+            state = seed + increment;
+            (void)pcg32();
+        }
+    };
+    class PCGSampler {
+        Rng rng;
+
+      public:
+        void set_sample_index(uint64_t idx) { rng = Rng(idx); }
+        Float next1d() { return rng.uniform_float(); }
+
+        void start_next_sample() {}
+        PCGSampler(uint64_t seed = 0u) : rng(seed) {}
+    };
+    class LCGSampler {
+        uint32_t seed;
+
+      public:
+        void set_sample_index(uint64_t idx) { seed = idx & 0xffffffff; }
+        Float next1d() {
+            seed = (1103515245 * seed + 12345);
+            return (Float)seed / (Float)0xFFFFFFFF;
+        }
+        void start_next_sample() {}
+        LCGSampler(uint64_t seed = 0u) : seed(seed) {}
+    };
+    struct Sampler : Variant<LCGSampler, PCGSampler> {
+        using Variant::Variant;
+        Float next1d() { AKR_VAR_DISPATCH(next1d); }
+        vec2 next2d() { return vec2(next1d(), next1d()); }
+        void start_next_sample() { AKR_VAR_DISPATCH(start_next_sample); }
+        void set_sample_index(uint64_t idx) { AKR_VAR_DISPATCH(set_sample_index, idx); }
+    };
     template <class T>
     struct TFilm {
         Array2D<T> radiance;
@@ -374,6 +425,8 @@ namespace akari::render {
 
     struct ConstantTexture {
         Spectrum value;
+        ConstantTexture(Float v) : value(v) {}
+        ConstantTexture(Spectrum v) : value(v) {}
     };
 
     struct DeviceImageImpl;
@@ -393,10 +446,13 @@ namespace akari::render {
         Vec3 dndu, dndv;
         Vec3 ng;
     };
-    template <class R>
+    template <class R, typename Derived>
     class TextureEvaluator {
       public:
-        AKR_XPU R evaluate(const Texture &tex, const ShadingPoint &sp);
+        using result_t = R;
+        AKR_XPU R evaluate(const Texture &tex, const ShadingPoint &sp) const {
+            return static_cast<const Derived *>(this)->do_evaluate(tex, sp);
+        }
     };
     enum class BSDFType : int {
         Unset = 0u,
@@ -427,6 +483,7 @@ namespace akari::render {
         Texture metallic;
         Texture roughness;
         Texture specular;
+        Texture emission;
     };
     class BSDF {
       public:
@@ -436,14 +493,15 @@ namespace akari::render {
         Frame frame;
         BSDF() = default;
         BSDF(const Frame &frame) : frame(frame) {}
-        BSDFSample sample_local(Float u0, const Vec2 &u1, const Vec3 &wo, const ShadingPoint &sp) const {
+        std::optional<BSDFSample> sample_local(Float u0, const Vec2 &u1, const Vec3 &wo, const ShadingPoint &sp) const {
             BSDFSample sample;
             sample.wi = cosine_hemisphere_sampling(u1);
-            if (same_hemisphere(wo, sample.wi)) {
-                sample.f = color * InvPi;
-                sample.pdf = cosine_hemisphere_pdf(abs_cos_theta(sample.wi)) * InvPi;
-                sample.type = BSDFType::DiffuseReflection;
+            if (!same_hemisphere(wo, sample.wi)) {
+                sample.wi.y = -sample.wi.y;
             }
+            sample.f = color * InvPi;
+            sample.pdf = cosine_hemisphere_pdf(abs_cos_theta(sample.wi));
+            sample.type = BSDFType::DiffuseReflection;
             return sample;
         }
         Spectrum evaluate_local(const Vec3 &wo, const Vec3 &wi) const {
@@ -454,14 +512,16 @@ namespace akari::render {
         }
         Float evaluate_pdf_local(const Vec3 &wo, const Vec3 &wi) const {
             if (same_hemisphere(wi, wo)) {
-                return cosine_hemisphere_pdf(abs_cos_theta(wi)) * InvPi;
+                return cosine_hemisphere_pdf(abs_cos_theta(wi));
             }
             return 0.0;
         }
-        BSDFSample sample(Float u0, const Vec2 &u1, const Vec3 &wo, const ShadingPoint &sp) const {
-            auto sample = sample_local(u0, u1, frame.world_to_local(wo), sp);
-            sample.wi = frame.local_to_world(sample.wi);
-            return sample;
+        std::optional<BSDFSample> sample(Float u0, const Vec2 &u1, const Vec3 &wo, const ShadingPoint &sp) const {
+            if (auto sample = sample_local(u0, u1, frame.world_to_local(wo), sp)) {
+                sample->wi = frame.local_to_world(sample->wi);
+                return sample;
+            }
+            return std::nullopt;
         }
         Spectrum evaluate(const Vec3 &wo, const Vec3 &wi) const {
             return evaluate_local(frame.world_to_local(wi), frame.world_to_local(wo));
@@ -527,7 +587,6 @@ namespace akari::render {
     struct SurfaceInteraction {
         Triangle triangle;
         Vec3 p;
-        BSDF bsdf;
         Vec3 ng, ns;
         vec2 texcoords;
         Vec3 dndu, dndv;
@@ -557,39 +616,37 @@ namespace akari::render {
         SpectrumEvaluator eval_s;
 
       public:
-        BSDF evaluate(const Material &mat, SurfaceInteraction &si) const {
+        BSDF evaluate(SurfaceInteraction &si) const {
             auto sp = si.sp();
-            BSDF bsdf(Frame(si.p, si.dpdu));
-            bsdf.color = eval_s(mat, sp);
+            auto mat = si.triangle.material;
+            BSDF bsdf(Frame(si.ns, si.dpdu));
+            bsdf.color = eval_s.evaluate(mat->color, sp);
             return bsdf;
         }
     };
     struct MeshInstance {
         Transform transform;
-        BufferView<vec3> vertices;
-        BufferView<ivec3> indices;
-        BufferView<vec3> normals;
-        BufferView<vec2> texcoords;
+        BufferView<const vec3> vertices;
+        BufferView<const ivec3> indices;
+        BufferView<const vec3> normals;
+        BufferView<const vec2> texcoords;
+        const scene::Mesh *mesh = nullptr;
         const Material *material = nullptr;
 
-        Triangle get_triangle(int prim_id) {
+        Triangle get_triangle(int prim_id) const {
             Triangle trig;
             for (int i = 0; i < 3; i++) {
                 trig.vertices[i] = transform.apply_vector(vertices[indices[prim_id][i]]);
                 trig.normals[i] = transform.apply_normal(normals[indices[prim_id][i]]);
-                trig.texcoords[i] = texcoords[indices[prim_id][i]];
+                if (!texcoords.empty())
+                    trig.texcoords[i] = texcoords[indices[prim_id][i]];
+                else {
+                    trig.texcoords[i] = vec2(i > 1, i % 2 == 0);
+                }
             }
             trig.material = material;
             return trig;
         }
-    };
-
-    class EmbreeAccel;
-    
-    struct Scene {
-        Camera camera;
-        std::vector<MeshInstance> instances;
-        std::shared_ptr<EmbreeAccel> accel;
     };
 
     struct Intersection {
@@ -599,13 +656,29 @@ namespace akari::render {
         int prim_id = -1;
         bool hit() const { return geom_id != -1; }
     };
+    struct Scene;
     class EmbreeAccel {
       public:
-        virtual void build(const std::shared_ptr<scene::SceneGraph> &scene) = 0;
+        virtual void build(const Scene &scene, const std::shared_ptr<scene::SceneGraph> &scene_graph) = 0;
         virtual std::optional<Intersection> intersect1(const Ray &ray) const = 0;
     };
     std::shared_ptr<EmbreeAccel> create_embree_accel();
 
+    struct Scene {
+        Camera camera;
+        std::vector<MeshInstance> instances;
+        std::vector<std::shared_ptr<Material>> materials;
+        std::shared_ptr<EmbreeAccel> accel;
+        std::optional<SurfaceInteraction> intersect(const Ray &ray) const;
+    };
+
     std::shared_ptr<const Scene> create_scene(const std::shared_ptr<scene::SceneGraph> &scene_graph);
-    Film render_pt(const Scene &scene);
+
+    struct PTConfig {
+        Sampler sampler;
+        int min_depth = 3;
+        int max_depth = 5;
+        int spp = 16;
+    };
+    Film render_pt(PTConfig config, const Scene &scene);
 } // namespace akari::render

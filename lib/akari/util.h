@@ -300,7 +300,7 @@ namespace akari {
         AKR_SER(o, d, tmin, tmax)
     };
 
-     struct Frame {
+    struct Frame {
         Frame() = default;
         static inline void compute_local_frame(const vec3 &v1, vec3 *v2, vec3 *v3) {
             if (std::abs(v1.x) > std::abs(v1.y))
@@ -511,7 +511,7 @@ namespace akari {
                 return *this;
             }
             template <typename... Ts>
-            AKR_CPU void emplace(Ts &&...args) {
+            AKR_CPU void emplace(Ts &&... args) {
                 reset();
                 new (ptr()) T(std::forward<Ts>(args)...);
                 set = true;
@@ -818,12 +818,21 @@ namespace akari {
         return self->method(__VA_ARGS__);                                                                              \
     });
     };
+    template <class... Ts>
+    struct overloaded : Ts... {
+        using Ts::operator()...;
+    };
+    // explicit deduction guide (not needed as of C++20)
+    template <class... Ts>
+    overloaded(Ts...) -> overloaded<Ts...>;
 
-     template <typename T>
+    template <typename T>
     struct BufferView {
         BufferView() = default;
         template <typename Allocator>
         BufferView(const std::vector<T, Allocator> &vec) : _data(vec.data()), _size(vec.size()) {}
+        template <typename Allocator, typename = std::enable_if_t<std::is_const_v<T>>>
+        BufferView(const std::vector<std::remove_const_t<T>, Allocator> &vec) : _data(vec.data()), _size(vec.size()) {}
         BufferView(T *data, size_t size) : _data(data), _size(size) {}
         T &operator[](uint32_t i) const { return _data[i]; }
         size_t size() const { return _size; }
@@ -832,6 +841,7 @@ namespace akari {
         const T *cbegin() const { return _data; }
         const T *cend() const { return _data + _size; }
         T *const &data() const { return _data; }
+        bool empty() const { return size() == 0; }
 
       private:
         T *_data = nullptr;

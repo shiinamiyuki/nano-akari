@@ -34,15 +34,17 @@ namespace akari::scene {
     };
     class Material {
       public:
-        P<Texture> diffuse;
+        P<Texture> color;
         P<Texture> specular;
         P<Texture> metallic;
-        P<Texture> roughnes;
+        P<Texture> roughness;
+        P<Texture> emission;
         void commit() {}
-        AKR_SER(diffuse, specular, metallic, roughnes)
+        AKR_SER(color, specular, metallic, roughness, emission)
     };
     struct Mesh {
         bool loaded = false;
+
       public:
         std::string name;
         std::vector<vec3> vertices;

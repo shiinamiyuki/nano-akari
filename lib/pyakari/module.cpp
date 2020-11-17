@@ -88,10 +88,11 @@ namespace akari::python {
             .def("set_float", &Texture::set_float);
         py::class_<Material, P<Material>>(m, "Material")
             .def(py::init<>())
-            .def_readwrite("diffuse", &Material::diffuse)
+            .def_readwrite("color", &Material::color)
             .def_readwrite("specular", &Material::specular)
             .def_readwrite("metallic", &Material::metallic)
-            .def_readwrite("roughnes", &Material::roughnes);
+            .def_readwrite("emission", &Material::emission)
+            .def_readwrite("roughness", &Material::roughness);
         py::class_<Instance, P<Instance>>(m, "Instance")
             .def(py::init<>())
             .def_readwrite("transform", &Instance::transform)

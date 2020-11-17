@@ -25,6 +25,7 @@ P<SceneGraph> import(const std::string &file) {
     auto create_vec = [&](aiVector3D v) -> glm::vec3 { return glm::vec3(v[0], v[1], v[2]); };
     auto color4_to_spectrum = [&](aiColor4D v) -> Spectrum { return Spectrum(v[0], v[1], v[2]); };
     Assimp::Importer importer;
+    importer.SetPropertyFloat(AI_CONFIG_PP_GSN_MAX_SMOOTHING_ANGLE, 20);
     const aiScene *ai_scene =
         importer.ReadFile(file, aiProcess_CalcTangentSpace | aiProcess_Triangulate | aiProcess_GenSmoothNormals |
                                     aiProcess_JoinIdenticalVertices | aiProcess_SortByPType);
@@ -36,7 +37,7 @@ P<SceneGraph> import(const std::string &file) {
         aiColor4D diffuse_color;
         aiGetMaterialColor(ai_mat, AI_MATKEY_COLOR_DIFFUSE, &diffuse_color);
         auto mat = P<Material>(new Material());
-        mat->diffuse = P<Texture>(new Texture(color4_to_spectrum(diffuse_color)));
+        mat->color = P<Texture>(new Texture(color4_to_spectrum(diffuse_color)));
         materials[i] = mat;
     }
     for (uint32_t i = 0; i < ai_scene->mNumMeshes; i++) {
@@ -45,6 +46,7 @@ P<SceneGraph> import(const std::string &file) {
             continue;
         }
         auto mesh = std::make_shared<Mesh>();
+        mesh->name = ai_mesh->mName.C_Str();
         mesh->indices.resize(ai_mesh->mNumFaces);
         for (uint32_t t = 0; t < ai_mesh->mNumFaces; t++) {
             AKR_ASSERT(ai_mesh->mFaces[t].mNumIndices == 3);

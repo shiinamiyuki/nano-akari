@@ -16,6 +16,7 @@
 #include <akari/render.h>
 #include <spdlog/spdlog.h>
 namespace akari::render {
+    bool Scene::occlude(const Ray &ray) const { return accel->occlude1(ray); }
     std::optional<SurfaceInteraction> Scene::intersect(const Ray &ray) const {
         std::optional<Intersection> isct = accel->intersect1(ray);
         if (!isct) {
@@ -25,9 +26,20 @@ namespace akari::render {
         SurfaceInteraction si(isct->uv, triangle);
         return si;
     }
-    std::shared_ptr<const Scene> create_scene(const std::shared_ptr<scene::SceneGraph> &scene_graph) {
+    Scene::~Scene() {
+        materials.clear();
+        lights.clear();
+        delete rsrc;
+    }
+    std::shared_ptr<const Scene> create_scene(Allocator<> alloc,
+                                              const std::shared_ptr<scene::SceneGraph> &scene_graph) {
         scene_graph->commit();
-        std::shared_ptr<Scene> scene(new Scene());
+        auto scene = make_pmr_shared<Scene>(alloc);
+        {
+            auto rsrc = alloc.resource();
+            scene->rsrc = new astd::pmr::monotonic_buffer_resource(rsrc);
+            scene->allocator = Allocator<>(scene->rsrc);
+        }
         scene->camera = [&] {
             Camera camera;
             if (auto perspective = scene_graph->camera->as<scene::PerspectiveCamera>()) {
@@ -37,7 +49,7 @@ namespace akari::render {
             }
             return camera;
         }();
-        std::unordered_map<const scene::Material *, std::shared_ptr<Material>> mat_map;
+        std::unordered_map<const scene::Material *, const Material *> mat_map;
         auto create_tex = [&](const scene::P<scene::Texture> &tex_node) -> Texture {
             if (!tex_node) {
                 return Texture(ConstantTexture(0.0));
@@ -55,11 +67,11 @@ namespace akari::render {
                 tex_node->value);
             return tex;
         };
-        auto create_mat = [&](const scene::P<scene::Material> &mat_node) -> std::shared_ptr<Material> {
+        auto create_mat = [&](const scene::P<scene::Material> &mat_node) -> const Material * {
             auto it = mat_map.find(mat_node.get());
             if (it != mat_map.end())
                 return it->second;
-            auto mat = std::make_shared<Material>();
+            auto mat = scene->allocator.new_object<Material>();
             mat->color = create_tex(mat_node->color);
             mat->emission = create_tex(mat_node->emission);
             mat_map.emplace(mat_node.get(), mat);
@@ -72,19 +84,39 @@ namespace akari::render {
                 Transform T = node_T * instance->transform();
                 MeshInstance inst;
                 inst.transform = T;
-                inst.material = create_mat(instance->material).get();
+                inst.material = create_mat(instance->material);
                 inst.indices = instance->mesh->indices;
                 inst.normals = instance->mesh->normals;
                 inst.texcoords = instance->mesh->texcoords;
                 inst.vertices = instance->mesh->vertices;
                 inst.mesh = instance->mesh.get();
-                scene->instances.emplace_back(inst);
+                if (inst.material->emission.isa<ConstantTexture>() &&
+                    luminance(inst.material->emission.get<ConstantTexture>()->evaluate_s(ShadingPoint())) <= 0.0) {
+                    // not emissive
+                } else {
+                    // emissived
+                    for (int i = 0; i < (int)inst.indices.size(); i++) {
+                        AreaLight area_light(inst.get_triangle(i), inst.material->emission, false);
+                        auto light = alloc.new_object<Light>(area_light);
+                        scene->lights.emplace_back(light);
+                        inst.lights.emplace_back(light);
+                    }
+                }
+                scene->instances.emplace_back(std::move(inst));
             }
             for (auto &child : node->children) {
                 self(node_T, child, self);
             }
         };
         create_instance(Transform(), scene_graph->root, create_instance);
+        {
+            BufferView<const Light *> lights(scene->lights.data(), scene->lights.size());
+            std::vector<Float> power;
+            for (auto light : lights) {
+                power.emplace_back(1.0);
+            }
+            scene->light_sampler = alloc.new_object<PowerLightSampler>(alloc, lights, power);
+        }
         scene->accel = create_embree_accel();
         scene->accel->build(*scene, scene_graph);
         return scene;

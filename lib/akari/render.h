@@ -21,6 +21,111 @@ namespace akari::scene {
     class SceneGraph;
 }
 namespace akari::render {
+#pragma region distribution
+    /*
+     * Return the largest index i such that
+     * pred(i) is true
+     * If no such index i, last is returned
+     * */
+    template <typename Pred>
+    int upper_bound(int first, int last, Pred pred) {
+        int lo = first;
+        int hi = last;
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            if (pred(mid)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return std::clamp<int>(hi - 1, 0, (last - first) - 2);
+    }
+
+    struct Distribution1D {
+        friend struct Distribution2D;
+        Distribution1D(const Float *f, size_t n, Allocator<> allocator)
+            : func(f, f + n, allocator), cdf(n + 1, allocator) {
+            cdf[0] = 0;
+            for (size_t i = 0; i < n; i++) {
+                cdf[i + 1] = cdf[i] + func[i] / n;
+            }
+            funcInt = cdf[n];
+            if (funcInt == 0) {
+                for (uint32_t i = 1; i < n + 1; ++i)
+                    cdf[i] = Float(i) / Float(n);
+            } else {
+                for (uint32_t i = 1; i < n + 1; ++i)
+                    cdf[i] /= funcInt;
+            }
+        }
+        // y = F^{-1}(u)
+        // P(Y <= y) = P(F^{-1}(U) <= u) = P(U <= F(u)) = F(u)
+        // Assume: 0 <= i < n
+        [[nodiscard]] Float pdf_discrete(int i) const { return func[i] / (funcInt * count()); }
+        [[nodiscard]] Float pdf_continuous(Float x) const {
+            uint32_t offset = std::clamp<uint32_t>(static_cast<uint32_t>(x * count()), 0, count() - 1);
+            return func[offset] / funcInt;
+        }
+        std::pair<uint32_t, Float> sample_discrete(Float u) const {
+            uint32_t i = upper_bound(0, cdf.size(), [=](int idx) { return cdf[idx] <= u; });
+            return {i, pdf_discrete(i)};
+        }
+
+        Float sample_continuous(Float u, Float *pdf = nullptr, int *p_offset = nullptr) const {
+            uint32_t offset = upper_bound(0, cdf.size(), [=](int idx) { return cdf[idx] <= u; });
+            if (p_offset) {
+                *p_offset = offset;
+            }
+            Float du = u - cdf[offset];
+            if ((cdf[offset + 1] - cdf[offset]) > 0)
+                du /= (cdf[offset + 1] - cdf[offset]);
+            if (pdf)
+                *pdf = func[offset] / funcInt;
+            return ((float)offset + du) / count();
+        }
+
+        [[nodiscard]] size_t count() const { return func.size(); }
+        [[nodiscard]] Float integral() const { return funcInt; }
+
+      private:
+        astd::pmr::vector<Float> func, cdf;
+        Float funcInt;
+    };
+
+    struct Distribution2D {
+        Allocator<> allocator;
+        astd::pmr::vector<Distribution1D> pConditionalV;
+        std::shared_ptr<Distribution1D> pMarginal;
+
+      public:
+        Distribution2D(const Float *data, size_t nu, size_t nv, Allocator<> allocator_)
+            : allocator(allocator_), pConditionalV(allocator) {
+            pConditionalV.reserve(nv);
+            for (auto v = 0u; v < nv; v++) {
+                pConditionalV.emplace_back(&data[v * nu], nu, allocator);
+            }
+            std::vector<Float> m;
+            for (auto v = 0u; v < nv; v++) {
+                m.emplace_back(pConditionalV[v].funcInt);
+            }
+            pMarginal = make_pmr_shared<Distribution1D>(allocator, &m[0], nv, allocator);
+        }
+        Vec2 sample_continuous(const Vec2 &u, Float *pdf) const {
+            int v;
+            Float pdfs[2];
+            auto d1 = pMarginal->sample_continuous(u[0], &pdfs[0], &v);
+            auto d0 = pConditionalV[v].sample_continuous(u[1], &pdfs[1]);
+            *pdf = pdfs[0] * pdfs[1];
+            return Vec2(d0, d1);
+        }
+        Float pdf_continuous(const Vec2 &p) const {
+            auto iu = std::clamp<int>(p[0] * pConditionalV[0].count(), 0, pConditionalV[0].count() - 1);
+            auto iv = std::clamp<int>(p[1] * pMarginal->count(), 0, pMarginal->count() - 1);
+            return pConditionalV[iv].func[iu] / pMarginal->funcInt;
+        }
+    };
+#pragma endregion
 #pragma region sampling
     AKR_XPU inline glm::vec2 concentric_disk_sampling(const glm::vec2 &u) {
         glm::vec2 uOffset = ((float(2.0) * u) - glm::vec2(int32_t(1), int32_t(1)));
@@ -422,11 +527,23 @@ namespace akari::render {
             AKR_VAR_DISPATCH(generate_ray, u1, u2, raster);
         }
     };
+    struct ShadingPoint {
+        Vec2 texcoords;
+        Vec3 p;
+        Vec3 dpdu, dpdv;
+        Vec3 n;
+        Vec3 dndu, dndv;
+        Vec3 ng;
+        ShadingPoint() = default;
+        ShadingPoint(Vec2 tc) : texcoords(tc) {}
+    };
 
     struct ConstantTexture {
         Spectrum value;
         ConstantTexture(Float v) : value(v) {}
         ConstantTexture(Spectrum v) : value(v) {}
+        Float evaluate_f(const ShadingPoint &sp) const { return value[0]; }
+        Spectrum evaluate_s(const ShadingPoint &sp) const { return value; }
     };
 
     struct DeviceImageImpl;
@@ -435,25 +552,12 @@ namespace akari::render {
         DeviceImage image;
     };
 
-    struct Texture : Variant<ConstantTexture, ImageTexture> {
+    struct Texture : Variant<ConstantTexture> {
         using Variant::Variant;
+        Float evaluate_f(const ShadingPoint &sp) const { AKR_VAR_DISPATCH(evaluate_f, sp); }
+        Spectrum evaluate_s(const ShadingPoint &sp) const { AKR_VAR_DISPATCH(evaluate_s, sp); }
     };
-    struct ShadingPoint {
-        Vec2 texcoords;
-        Vec3 p;
-        Vec3 dpdu, dpdv;
-        Vec3 n;
-        Vec3 dndu, dndv;
-        Vec3 ng;
-    };
-    template <class R, typename Derived>
-    class TextureEvaluator {
-      public:
-        using result_t = R;
-        AKR_XPU R evaluate(const Texture &tex, const ShadingPoint &sp) const {
-            return static_cast<const Derived *>(this)->do_evaluate(tex, sp);
-        }
-    };
+
     enum class BSDFType : int {
         Unset = 0u,
         Reflection = 1u << 0,
@@ -478,13 +582,7 @@ namespace akari::render {
         Float pdf = 0.0;
         BSDFType type = BSDFType::Unset;
     };
-    struct Material {
-        Texture color;
-        Texture metallic;
-        Texture roughness;
-        Texture specular;
-        Texture emission;
-    };
+
     class BSDF {
       public:
         Spectrum color;
@@ -493,6 +591,8 @@ namespace akari::render {
         Frame frame;
         BSDF() = default;
         BSDF(const Frame &frame) : frame(frame) {}
+
+      private:
         std::optional<BSDFSample> sample_local(Float u0, const Vec2 &u1, const Vec3 &wo, const ShadingPoint &sp) const {
             BSDFSample sample;
             sample.wi = cosine_hemisphere_sampling(u1);
@@ -504,6 +604,7 @@ namespace akari::render {
             sample.type = BSDFType::DiffuseReflection;
             return sample;
         }
+
         Spectrum evaluate_local(const Vec3 &wo, const Vec3 &wi) const {
             if (same_hemisphere(wi, wo)) {
                 return color * InvPi;
@@ -516,6 +617,8 @@ namespace akari::render {
             }
             return 0.0;
         }
+
+      public:
         std::optional<BSDFSample> sample(Float u0, const Vec2 &u1, const Vec3 &wo, const ShadingPoint &sp) const {
             if (auto sample = sample_local(u0, u1, frame.world_to_local(wo), sp)) {
                 sample->wi = frame.local_to_world(sample->wi);
@@ -524,13 +627,15 @@ namespace akari::render {
             return std::nullopt;
         }
         Spectrum evaluate(const Vec3 &wo, const Vec3 &wi) const {
-            return evaluate_local(frame.world_to_local(wi), frame.world_to_local(wo));
+            return evaluate_local(frame.world_to_local(wo), frame.world_to_local(wi));
         }
         Float evaluate_pdf(const Vec3 &wo, const Vec3 &wi) const {
-            return evaluate_pdf_local(frame.world_to_local(wi), frame.world_to_local(wo));
+            return evaluate_pdf_local(frame.world_to_local(wo), frame.world_to_local(wi));
         }
     };
+
     struct Light;
+    struct Material;
     struct Triangle {
         std::array<Vec3, 3> vertices;
         std::array<Vec3, 3> normals;
@@ -584,6 +689,7 @@ namespace akari::render {
             }
         }
     };
+    struct Material;
     struct SurfaceInteraction {
         Triangle triangle;
         Vec3 p;
@@ -599,6 +705,8 @@ namespace akari::render {
             dpdv = triangle.dpdu(uv[1]);
             std::tie(dndu, dndv) = triangle.dnduv(uv);
         }
+        const Light *light() const { return triangle.light; }
+        const Material *material() const { return triangle.material; }
         ShadingPoint sp() const {
             ShadingPoint sp_;
             sp_.n = ns;
@@ -610,26 +718,29 @@ namespace akari::render {
             return sp_;
         }
     };
-    template <class FloatEvaluator, class SpectrumEvaluator>
-    class MaterialEvaluator {
-        FloatEvaluator eval_f;
-        SpectrumEvaluator eval_s;
 
-      public:
-        BSDF evaluate(SurfaceInteraction &si) const {
+    struct Material {
+        Texture color;
+        Texture metallic;
+        Texture roughness;
+        Texture specular;
+        Texture emission;
+
+        BSDF evaluate(const SurfaceInteraction &si) const {
             auto sp = si.sp();
-            auto mat = si.triangle.material;
             BSDF bsdf(Frame(si.ns, si.dpdu));
-            bsdf.color = eval_s.evaluate(mat->color, sp);
+            bsdf.color = color.evaluate_s(sp);
             return bsdf;
         }
     };
+
     struct MeshInstance {
         Transform transform;
         BufferView<const vec3> vertices;
         BufferView<const ivec3> indices;
         BufferView<const vec3> normals;
         BufferView<const vec2> texcoords;
+        std::vector<const Light *> lights;
         const scene::Mesh *mesh = nullptr;
         const Material *material = nullptr;
 
@@ -645,10 +756,86 @@ namespace akari::render {
                 }
             }
             trig.material = material;
+            if (!lights.empty()) {
+                trig.light = lights[prim_id];
+            }
             return trig;
         }
     };
+    struct PointGeometry {
+        Vec3 p;
+        Vec3 n;
+    };
 
+    struct LightSampleContext {
+        vec2 u;
+        Vec3 p;
+    };
+    struct LightSample {
+        Vec3 ng = Vec3(0.0f);
+        Vec3 wi; // w.r.t to the luminated surface; normalized
+        Float pdf = 0.0f;
+        Spectrum I;
+        Ray shadow_ray;
+    };
+    struct LightRaySample {
+        Ray ray;
+        Spectrum E;
+        vec3 ng;
+        vec2 uv; // 2D parameterized position
+        Float pdfPos = 0.0, pdfDir = 0.0;
+    };
+
+    struct AreaLight {
+        Triangle triangle;
+        Texture color;
+        bool double_sided = false;
+        AreaLight(Triangle triangle, Texture color, bool double_sided)
+            : triangle(triangle), color(color), double_sided(double_sided) {
+            ng = triangle.ng();
+        }
+        Spectrum Le(const Vec3 &wo, const ShadingPoint &sp) const {
+            bool face_front = dot(wo, ng) > 0.0;
+            if (double_sided || face_front) {
+                return color.evaluate_s(sp);
+            }
+            return Spectrum(0.0);
+        }
+        Float pdf_incidence(const PointGeometry &ref, const vec3 &wi) const {
+            Ray ray(ref.p, wi);
+            auto hit = triangle.intersect(ray);
+            if (!hit) {
+                return 0.0f;
+            }
+            Float SA = triangle.area() * (-glm::dot(wi, triangle.ng())) / (hit->first * hit->first);
+            return 1.0f / SA;
+        }
+        LightSample sample_incidence(const LightSampleContext &ctx) const {
+            auto coords = uniform_sample_triangle(ctx.u);
+            auto p = triangle.p(coords);
+            LightSample sample;
+            sample.ng = triangle.ng();
+            sample.wi = p - ctx.p;
+            auto dist_sqr = dot(sample.wi, sample.wi);
+            sample.wi /= sqrt(dist_sqr);
+            sample.I = color.evaluate_s(ShadingPoint(triangle.texcoord(coords)));
+            sample.pdf = dist_sqr / max(Float(0.0), -dot(sample.wi, sample.ng)) / triangle.area();
+            sample.shadow_ray = Ray(p, -sample.wi, Eps / std::abs(dot(sample.wi, sample.ng)),
+                                    sqrt(dist_sqr) * (Float(1.0f) - ShadowEps));
+            return sample;
+        }
+
+      private:
+        Vec3 ng;
+    };
+    struct Light : Variant<AreaLight> {
+        using Variant::Variant;
+        Spectrum Le(const Vec3 &wo, const ShadingPoint &sp) const { AKR_VAR_DISPATCH(Le, wo, sp); }
+        Float pdf_incidence(const PointGeometry &ref, const vec3 &wi) const {
+            AKR_VAR_DISPATCH(pdf_incidence, ref, wi);
+        }
+        LightSample sample_incidence(const LightSampleContext &ctx) const { AKR_VAR_DISPATCH(sample_incidence, ctx); }
+    };
     struct Intersection {
         Float t = Inf;
         Vec2 uv;
@@ -661,18 +848,54 @@ namespace akari::render {
       public:
         virtual void build(const Scene &scene, const std::shared_ptr<scene::SceneGraph> &scene_graph) = 0;
         virtual std::optional<Intersection> intersect1(const Ray &ray) const = 0;
+        virtual bool occlude1(const Ray &ray) const = 0;
     };
     std::shared_ptr<EmbreeAccel> create_embree_accel();
 
+    struct PowerLightSampler {
+        PowerLightSampler(Allocator<> alloc, BufferView<const Light *> lights_, const std::vector<Float> &power)
+            : light_distribution(power.data(), power.size(), alloc), lights(lights_) {
+            for (uint32_t i = 0; i < power.size(); i++) {
+                light_pdf[lights[i]] = light_distribution.pdf_discrete(i);
+            }
+        }
+        Distribution1D light_distribution;
+        BufferView<const Light *> lights;
+        std::unordered_map<const Light *, Float> light_pdf;
+        std::pair<const Light *, Float> sample(Vec2 u) const {
+            auto [light_idx, pdf] = light_distribution.sample_discrete(u[0]);
+            return std::make_pair(lights[light_idx], pdf);
+        }
+        Float pdf(const Light *light) const {
+            auto it = light_pdf.find(light);
+            if (it == light_pdf.end()) {
+                return 0.0;
+            }
+            return it->second;
+        }
+    };
+    struct LightSampler : Variant<PowerLightSampler *> {
+        using Variant::Variant;
+        std::pair<const Light *, Float> sample(Vec2 u) const { AKR_VAR_PTR_DISPATCH(sample, u); }
+        Float pdf(const Light *light) const { AKR_VAR_PTR_DISPATCH(pdf, light); }
+    };
     struct Scene {
         Camera camera;
         std::vector<MeshInstance> instances;
-        std::vector<std::shared_ptr<Material>> materials;
+        std::vector<const Material *> materials;
+        std::vector<const Light *> lights;
         std::shared_ptr<EmbreeAccel> accel;
+        Allocator<> allocator;
+        LightSampler light_sampler;
+        astd::pmr::monotonic_buffer_resource *rsrc;
         std::optional<SurfaceInteraction> intersect(const Ray &ray) const;
+        bool occlude(const Ray &ray) const;
+        Scene() = default;
+        Scene(const Scene &) = delete;
+        ~Scene();
     };
 
-    std::shared_ptr<const Scene> create_scene(const std::shared_ptr<scene::SceneGraph> &scene_graph);
+    std::shared_ptr<const Scene> create_scene(Allocator<>, const std::shared_ptr<scene::SceneGraph> &scene_graph);
 
     struct PTConfig {
         Sampler sampler;

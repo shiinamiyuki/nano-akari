@@ -15,7 +15,9 @@
 #include <variant>
 #include <vector>
 #include <optional>
+#include <memory>
 #include <akari/common.h>
+#include <akari/pmr.h>
 #if defined(AKR_GPU_BACKEND_CUDA) || defined(__CUDACC__) || defined(__NVCC__)
 #    include <cuda.h>
 #    define GLM_FORCE_CUDA
@@ -36,6 +38,15 @@
 #include <akari/macro.h>
 
 namespace akari {
+    template <class T = astd::byte>
+    using Allocator = astd::pmr::polymorphic_allocator<T>;
+    template <typename T, typename... Ts>
+    std::shared_ptr<T> make_pmr_shared(Allocator<> alloc, Ts &&...args) {
+        return std::shared_ptr<T>(alloc.new_object<T>(std::forward<Ts>(args)...), [=](T *p) mutable {
+            alloc.destroy(p);
+            alloc.deallocate_object(const_cast<std::remove_const_t<T> *>(p), 1);
+        });
+    }
     template <typename T, int N>
     struct Color;
     using Float = float;
@@ -447,7 +458,6 @@ namespace akari {
 namespace akari {
     using namespace glm;
     namespace astd {
-        enum class byte : unsigned char {};
         inline constexpr size_t max(size_t a, size_t b) { return a < b ? b : a; }
         template <typename T1, typename T2>
         struct alignas(astd::max(alignof(T1), alignof(T2))) pair {
@@ -511,7 +521,7 @@ namespace akari {
                 return *this;
             }
             template <typename... Ts>
-            AKR_CPU void emplace(Ts &&... args) {
+            AKR_CPU void emplace(Ts &&...args) {
                 reset();
                 new (ptr()) T(std::forward<Ts>(args)...);
                 set = true;
@@ -833,6 +843,8 @@ namespace akari {
         BufferView(const std::vector<T, Allocator> &vec) : _data(vec.data()), _size(vec.size()) {}
         template <typename Allocator, typename = std::enable_if_t<std::is_const_v<T>>>
         BufferView(const std::vector<std::remove_const_t<T>, Allocator> &vec) : _data(vec.data()), _size(vec.size()) {}
+        template <typename Allocator, typename = std::enable_if_t<std::is_const_v<T>>>
+        BufferView(const T *data, size_t size) : _data(data), _size(size) {}
         BufferView(T *data, size_t size) : _data(data), _size(size) {}
         T &operator[](uint32_t i) const { return _data[i]; }
         size_t size() const { return _size; }

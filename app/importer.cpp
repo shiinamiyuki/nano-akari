@@ -34,10 +34,12 @@ P<SceneGraph> import(const std::string &file) {
     std::vector<P<Mesh>> meshes((size_t)ai_scene->mNumMeshes);
     for (uint32_t i = 0; i < ai_scene->mNumMaterials; i++) {
         const aiMaterial *ai_mat = ai_scene->mMaterials[i];
-        aiColor4D diffuse_color;
+        aiColor4D diffuse_color, emission_color;
         aiGetMaterialColor(ai_mat, AI_MATKEY_COLOR_DIFFUSE, &diffuse_color);
+        aiGetMaterialColor(ai_mat, AI_MATKEY_COLOR_EMISSIVE, &emission_color);
         auto mat = P<Material>(new Material());
         mat->color = P<Texture>(new Texture(color4_to_spectrum(diffuse_color)));
+        mat->emission = P<Texture>(new Texture(color4_to_spectrum(emission_color)));
         materials[i] = mat;
     }
     for (uint32_t i = 0; i < ai_scene->mNumMeshes; i++) {

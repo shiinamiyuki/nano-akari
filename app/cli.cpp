@@ -36,9 +36,10 @@ int main(int argc, char **argv) {
         }
         {
             render::PTConfig config;
-            config.max_depth = 1;
+            config.max_depth = 5;
             config.sampler = render::PCGSampler();
-            auto scene = render::create_scene(scene_graph);
+            Allocator<> alloc;
+            auto scene = render::create_scene(alloc, scene_graph);
             auto film = render::render_pt(config, *scene);
             auto image = film.to_rgb_image();
             write_ldr(image, "out.png");

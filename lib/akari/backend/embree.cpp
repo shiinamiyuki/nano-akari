@@ -88,6 +88,13 @@ namespace akari::render {
             }
             EMBREE_CHECK(rtcCommitScene(rtcScene));
         }
+          bool occlude1(const Ray &ray) const override {
+            auto rtcRay = toRTCRay(ray);
+            RTCIntersectContext context;
+            rtcInitIntersectContext(&context);
+            rtcOccluded1(rtcScene, &context, &rtcRay);
+            return rtcRay.tfar == -std::numeric_limits<float>::infinity();
+        }
         std::optional<Intersection> intersect1(const Ray &ray) const override {
             RTCRayHit rayHit;
             rayHit.ray = toRTCRay(ray);

@@ -24,9 +24,12 @@ namespace akari::render {
         }
         Triangle triangle = instances[isct->geom_id].get_triangle(isct->prim_id);
         SurfaceInteraction si(isct->uv, triangle);
+        si.shape = &instances[isct->geom_id];
         return si;
     }
     Scene::~Scene() {
+        camera.reset();
+        light_sampler.reset();
         materials.clear();
         lights.clear();
         delete rsrc;
@@ -41,11 +44,11 @@ namespace akari::render {
             scene->allocator = Allocator<>(scene->rsrc);
         }
         scene->camera = [&] {
-            Camera camera;
+            std::optional<Camera> camera;
             if (auto perspective = scene_graph->camera->as<scene::PerspectiveCamera>()) {
                 TRSTransform TRS{perspective->transform.translation, perspective->transform.rotation, Vec3(1.0)};
                 auto c2w = TRS();
-                camera = PerspectiveCamera(perspective->resolution, c2w, perspective->fov);
+                camera.emplace(PerspectiveCamera(perspective->resolution, c2w, perspective->fov));
             }
             return camera;
         }();
@@ -54,18 +57,18 @@ namespace akari::render {
             if (!tex_node) {
                 return Texture(ConstantTexture(0.0));
             }
-            Texture tex;
+            std::optional<Texture> tex;
             std::visit(
                 [&](auto &&arg) {
                     using T = std::decay_t<decltype(arg)>;
                     if constexpr (std::is_same_v<T, Float>) {
-                        tex = ConstantTexture(arg);
+                        tex.emplace(ConstantTexture(arg));
                     } else if constexpr (std::is_same_v<T, Spectrum>) {
-                        tex = ConstantTexture(arg);
+                        tex.emplace(ConstantTexture(arg));
                     }
                 },
                 tex_node->value);
-            return tex;
+            return tex.value();
         };
         auto create_mat = [&](const scene::P<scene::Material> &mat_node) -> const Material * {
             auto it = mat_map.find(mat_node.get());
@@ -115,7 +118,7 @@ namespace akari::render {
             for (auto light : lights) {
                 power.emplace_back(1.0);
             }
-            scene->light_sampler = alloc.new_object<PowerLightSampler>(alloc, lights, power);
+            scene->light_sampler = std::make_shared<PowerLightSampler>(alloc, lights, power);
         }
         scene->accel = create_embree_accel();
         scene->accel->build(*scene, scene_graph);

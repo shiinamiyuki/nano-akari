@@ -426,6 +426,7 @@ namespace akari::render {
     };
     struct Sampler : Variant<LCGSampler, PCGSampler> {
         using Variant::Variant;
+        Sampler():Sampler(PCGSampler()){}
         Float next1d() { AKR_VAR_DISPATCH(next1d); }
         vec2 next2d() { return vec2(next1d(), next1d()); }
         void start_next_sample() { AKR_VAR_DISPATCH(start_next_sample); }
@@ -556,6 +557,7 @@ namespace akari::render {
         using Variant::Variant;
         Float evaluate_f(const ShadingPoint &sp) const { AKR_VAR_DISPATCH(evaluate_f, sp); }
         Spectrum evaluate_s(const ShadingPoint &sp) const { AKR_VAR_DISPATCH(evaluate_s, sp); }
+        Texture() : Texture(ConstantTexture(0.0)) {}
     };
 
     enum class BSDFType : int {
@@ -582,55 +584,88 @@ namespace akari::render {
         Float pdf = 0.0;
         BSDFType type = BSDFType::Unset;
     };
+    class BSDFClosure;
+    class DiffuseBSDF {
+        Spectrum R;
 
-    class BSDF {
       public:
-        Spectrum color;
-        Float metallic = 0.0;
-        Float roughness = 0.0;
-        Frame frame;
-        BSDF() = default;
-        BSDF(const Frame &frame) : frame(frame) {}
+        DiffuseBSDF(const Spectrum &R) : R(R) {}
+        [[nodiscard]] Float evaluate_pdf(const Vec3 &wo, const Vec3 &wi) const {
 
-      private:
-        std::optional<BSDFSample> sample_local(Float u0, const Vec2 &u1, const Vec3 &wo, const ShadingPoint &sp) const {
+            if (same_hemisphere(wo, wi)) {
+                return cosine_hemisphere_pdf(std::abs(cos_theta(wi)));
+            }
+            return 0.0f;
+        }
+        [[nodiscard]] Spectrum evaluate(const Vec3 &wo, const Vec3 &wi) const {
+
+            if (same_hemisphere(wo, wi)) {
+                return R * InvPi;
+            }
+            return Spectrum(0.0f);
+        }
+        [[nodiscard]] BSDFType type() const { return BSDFType::DiffuseReflection; }
+        std::optional<BSDFSample> sample(const vec2 &u, const Vec3 &wo) const {
             BSDFSample sample;
-            sample.wi = cosine_hemisphere_sampling(u1);
+            sample.wi = cosine_hemisphere_sampling(u);
             if (!same_hemisphere(wo, sample.wi)) {
                 sample.wi.y = -sample.wi.y;
             }
-            sample.f = color * InvPi;
-            sample.pdf = cosine_hemisphere_pdf(abs_cos_theta(sample.wi));
-            sample.type = BSDFType::DiffuseReflection;
+            sample.type = type();
+            sample.pdf = cosine_hemisphere_pdf(std::abs(cos_theta(sample.wi)));
+            sample.f = R * InvPi;
             return sample;
         }
+    };
 
-        Spectrum evaluate_local(const Vec3 &wo, const Vec3 &wi) const {
-            if (same_hemisphere(wi, wo)) {
-                return color * InvPi;
-            }
-            return Spectrum(0.0);
+    class BSDFClosure : public Variant<DiffuseBSDF> {
+      public:
+        using Variant::Variant;
+        [[nodiscard]] Float evaluate_pdf(const Vec3 &wo, const Vec3 &wi) const {
+            AKR_VAR_DISPATCH(evaluate_pdf, wo, wi);
         }
-        Float evaluate_pdf_local(const Vec3 &wo, const Vec3 &wi) const {
-            if (same_hemisphere(wi, wo)) {
-                return cosine_hemisphere_pdf(abs_cos_theta(wi));
-            }
-            return 0.0;
+        [[nodiscard]] Spectrum evaluate(const Vec3 &wo, const Vec3 &wi) const { AKR_VAR_DISPATCH(evaluate, wo, wi); }
+        [[nodiscard]] BSDFType type() const { AKR_VAR_DISPATCH(type); }
+        [[nodiscard]] bool match_flags(BSDFType flag) const { return ((uint32_t)type() & (uint32_t)flag) != 0; }
+        [[nodiscard]] std::optional<BSDFSample> sample(const vec2 &u, const Vec3 &wo) const {
+            AKR_VAR_DISPATCH(sample, u, wo);
         }
+    };
+    struct BSDFSampleContext {
+        Float u0;
+        Vec2 u1;
+        const Vec3 wo;
+    };
+    class BSDF {
+        std::optional<BSDFClosure> closure_;
+        Frame frame;
+        Float choice_pdf = 1.0f;
 
       public:
-        std::optional<BSDFSample> sample(Float u0, const Vec2 &u1, const Vec3 &wo, const ShadingPoint &sp) const {
-            if (auto sample = sample_local(u0, u1, frame.world_to_local(wo), sp)) {
+        BSDF(const Frame &frame) : frame(frame) {}
+        bool null() const { return !closure_.has_value(); }
+        void set_closure(const BSDFClosure &closure) { closure_ = closure; }
+        void set_choice_pdf(Float pdf) { choice_pdf = pdf; }
+        const BSDFClosure &closure() const { return *closure_; }
+        [[nodiscard]] Float evaluate_pdf(const Vec3 &wo, const Vec3 &wi) const {
+            auto pdf = closure().evaluate_pdf(frame.world_to_local(wo), frame.world_to_local(wi));
+            return pdf * choice_pdf;
+        }
+        [[nodiscard]] Spectrum evaluate(const Vec3 &wo, const Vec3 &wi) const {
+            auto f = closure().evaluate(frame.world_to_local(wo), frame.world_to_local(wi));
+            return f;
+        }
+
+        [[nodiscard]] BSDFType type() const { return closure().type(); }
+        [[nodiscard]] bool match_flags(BSDFType flag) const { return closure().match_flags(flag); }
+        std::optional<BSDFSample> sample(const BSDFSampleContext &ctx) const {
+            auto wo = frame.world_to_local(ctx.wo);
+            if (auto sample = closure().sample(ctx.u1, wo)) {
                 sample->wi = frame.local_to_world(sample->wi);
+                sample->pdf *= choice_pdf;
                 return sample;
             }
             return std::nullopt;
-        }
-        Spectrum evaluate(const Vec3 &wo, const Vec3 &wi) const {
-            return evaluate_local(frame.world_to_local(wo), frame.world_to_local(wi));
-        }
-        Float evaluate_pdf(const Vec3 &wo, const Vec3 &wi) const {
-            return evaluate_pdf_local(frame.world_to_local(wo), frame.world_to_local(wi));
         }
     };
 
@@ -690,6 +725,7 @@ namespace akari::render {
         }
     };
     struct Material;
+    struct MeshInstance;
     struct SurfaceInteraction {
         Triangle triangle;
         Vec3 p;
@@ -697,7 +733,7 @@ namespace akari::render {
         vec2 texcoords;
         Vec3 dndu, dndv;
         Vec3 dpdu, dpdv;
-
+        const MeshInstance *shape = nullptr;
         SurfaceInteraction(const vec2 &uv, const Triangle &triangle)
             : triangle(triangle), p(triangle.p(uv)), ng(triangle.ng()), ns(triangle.ns(uv)),
               texcoords(triangle.texcoord(uv)) {
@@ -725,11 +761,11 @@ namespace akari::render {
         Texture roughness;
         Texture specular;
         Texture emission;
-
+        Material() {}
         BSDF evaluate(const SurfaceInteraction &si) const {
             auto sp = si.sp();
             BSDF bsdf(Frame(si.ns, si.dpdu));
-            bsdf.color = color.evaluate_s(sp);
+            bsdf.set_closure(DiffuseBSDF(color.evaluate_s(sp)));
             return bsdf;
         }
     };
@@ -874,19 +910,19 @@ namespace akari::render {
             return it->second;
         }
     };
-    struct LightSampler : Variant<PowerLightSampler *> {
+    struct LightSampler : Variant<std::shared_ptr<PowerLightSampler>> {
         using Variant::Variant;
         std::pair<const Light *, Float> sample(Vec2 u) const { AKR_VAR_PTR_DISPATCH(sample, u); }
         Float pdf(const Light *light) const { AKR_VAR_PTR_DISPATCH(pdf, light); }
     };
     struct Scene {
-        Camera camera;
+        std::optional<Camera> camera;
         std::vector<MeshInstance> instances;
         std::vector<const Material *> materials;
         std::vector<const Light *> lights;
         std::shared_ptr<EmbreeAccel> accel;
         Allocator<> allocator;
-        LightSampler light_sampler;
+        std::optional<LightSampler> light_sampler;
         astd::pmr::monotonic_buffer_resource *rsrc;
         std::optional<SurfaceInteraction> intersect(const Ray &ray) const;
         bool occlude(const Ray &ray) const;
@@ -904,4 +940,22 @@ namespace akari::render {
         int spp = 16;
     };
     Film render_pt(PTConfig config, const Scene &scene);
+
+    struct SMSConfig {
+        Sampler sampler;
+        int min_depth = 3;
+        int max_depth = 5;
+        int spp = 16;
+    };
+
+    // sms single scatter
+    Film render_sms_ss(SMSConfig config, const Scene &scene);
+    struct BDPTConfig {
+        Sampler sampler;
+        int min_depth = 3;
+        int max_depth = 5;
+        int spp = 16;
+    };
+
+    Film render_bdpt(PTConfig config, const Scene &scene);
 } // namespace akari::render

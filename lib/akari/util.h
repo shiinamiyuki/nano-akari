@@ -295,6 +295,27 @@ namespace cereal {
     }
 } // namespace cereal
 namespace akari {
+    /*
+    A Row major 2x2 matrix
+    */
+    template <typename T>
+    struct Matrix2 {
+        Matrix2(Mat<T, 2> m) : m(m) {}
+        Matrix2() { m = glm::identity<Mat<T, 2>>(); }
+        Matrix2(T x00, T x01, T x10, T x11) { m = Mat<T, 2>(x00, x10, x01, x11); }
+        Matrix2 inverse() const { return Matrix2(glm::inverse(m)); }
+        Vector<T, 2> operator*(const Vector<T, 2> &v)const { return m * v; }
+        Matrix2<T> operator*(const Matrix2<T> &n)const { return Matrix2(m * n.m); }
+        T &operator()(int i, int j) { return m[j][i]; }
+        const T &operator()(int i, int j) const { return m[j][i]; }
+        Float determinant() const { return glm::determinant(m); }
+
+      private:
+        Mat<T, 2> m;
+    };
+    using Matrix2f = Matrix2<float>;
+    using Matrix2d = Matrix2<double>;
+
     struct Ray {
         // Float time = 0.0f;
         vec3 o;
@@ -669,7 +690,6 @@ namespace akari {
       public:
         using Index = TypeIndex<T...>;
         static constexpr size_t num_types = nTypes;
-        Variant() = default;
 
         template <typename U>
         AKR_XPU Variant(const U &u) {
@@ -750,11 +770,14 @@ namespace akari {
     case N:                                                                                                            \
         if constexpr (N < nTypes) {                                                                                    \
             using ty = typename Index::template GetType<N>::type;                                                      \
-            if constexpr (std::is_const_v<std::remove_pointer_t<decltype(this)>>)                                      \
-                return visitor(*reinterpret_cast<const ty *>(&data));                                                  \
-            else                                                                                                       \
-                return visitor(*reinterpret_cast<ty *>(&data));                                                        \
-        };
+            if constexpr (!std::is_same_v<ty, std::monostate>) {                                                       \
+                if constexpr (std::is_const_v<std::remove_pointer_t<decltype(this)>>)                                  \
+                    return visitor(*reinterpret_cast<const ty *>(&data));                                              \
+                else                                                                                                   \
+                    return visitor(*reinterpret_cast<ty *>(&data));                                                    \
+            }                                                                                                          \
+        };                                                                                                             \
+        break;
 #define _GEN_CASES_2()                                                                                                 \
     _GEN_CASE_N(0)                                                                                                     \
     _GEN_CASE_N(1)

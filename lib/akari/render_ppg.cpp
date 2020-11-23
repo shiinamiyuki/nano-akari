@@ -295,13 +295,12 @@ namespace akari::render {
     Image render_ppg(PPGConfig config, const Scene &scene) {
         std::shared_ptr<STree> sTree(new STree(scene.accel->world_bounds()));
         RatioStat non_zero_path;
-        Array2D<Spectrum> sum(scene.camera->resolution());
-        Spectrum sum_weights(0.0);
+        std::vector<std::pair<Array2D<Spectrum>, Spectrum>> all_samples;
         std::vector<astd::pmr::monotonic_buffer_resource *> buffers;
         for (size_t i = 0; i < thread::num_work_threads(); i++) {
             buffers.emplace_back(new astd::pmr::monotonic_buffer_resource(astd::pmr::new_delete_resource()));
         }
-        std::vector<Sampler> samplers(hprod(sum.dimension()));
+        std::vector<Sampler> samplers(hprod(scene.camera->resolution()));
         for (size_t i = 0; i < samplers.size(); i++) {
             samplers[i] = config.sampler;
             samplers[i].set_sample_index(i);
@@ -357,8 +356,7 @@ namespace akari::render {
                 });
             Array2D<Spectrum> pixel_weight = Array2D<Spectrum>::ones(variance.dimension()).safe_div(variance);
             Spectrum weight = pixel_weight.sum();
-            sum += Spectrum(weight) * film.to_array2d();
-            sum_weights += weight;
+            all_samples.emplace_back(std::move(film.to_array2d()), weight);
             spdlog::info("Refining SDTree; pass: {}", pass + 1);
             spdlog::info("nodes: {}", sTree->nodes.size());
             spdlog::info("non zero path:{}%", non_zero_path.ratio() * 100);
@@ -401,13 +399,22 @@ namespace akari::render {
         {
             Array2D<Spectrum> pixel_weight = Array2D<Spectrum>::ones(variance.dimension()).safe_div(variance);
             Spectrum weight = pixel_weight.sum();
-            sum += Spectrum(weight) * film.to_array2d();
-            sum_weights += weight;
+            all_samples.emplace_back(std::move(film.to_array2d()), weight);
         }
         for (auto buf : buffers) {
             delete buf;
         }
         spdlog::info("render ppg done");
-        return array2d_to_rgb(sum / Spectrum(sum_weights));
+        Array2D<Spectrum> sum(scene.camera->resolution());
+        Spectrum sum_weights;
+        {
+            int cnt =0 ;
+            for(auto it = all_samples.rbegin(); cnt < 4 && it != all_samples.rend(); it++){
+                sum += it->first * it->second;
+                sum_weights += it->second;
+                cnt++;
+            }
+        }
+        return array2d_to_rgb(sum / sum_weights);
     }
 } // namespace akari::render

@@ -18,6 +18,7 @@ using render::DTreeWrapper;
 using render::QTreeNode;
 using render::Rng;
 using render::STree;
+using render::VarianceTracker;
 
 int main() {
     auto f = [](double x, double y, double z) {

@@ -16,6 +16,70 @@
 #include <akari/render.h>
 #include <spdlog/spdlog.h>
 namespace akari::render {
+    Spectrum FresnelNoOp::evaluate(Float cosThetaI) const { return Spectrum(1.0f); }
+    Spectrum FresnelConductor::evaluate(Float cosThetaI) const { return fr_conductor(cosThetaI, etaI, etaT, k); }
+    Spectrum FresnelDielectric::evaluate(Float cosThetaI) const {
+        return Spectrum(fr_dielectric(cosThetaI, etaI, etaT));
+    }
+    [[nodiscard]] std::optional<BSDFSample> FresnelSpecular::sample(const vec2 &u, const Vec3 &wo) const {
+        Float F = fr_dielectric(cos_theta(wo), etaA, etaB);
+        AKR_ASSERT(F >= 0.0);
+        BSDFSample sample;
+        if (u[0] < F) {
+            sample.wi = reflect(-wo, vec3(0, 1, 0));
+            sample.pdf = F;
+            sample.type = BSDFType::SpecularReflection;
+            sample.f = F * R / abs_cos_theta(sample.wi);
+        } else {
+            bool entering = cos_theta(wo) > 0;
+            Float etaI = entering ? etaA : etaB;
+            Float etaT = entering ? etaB : etaA;
+            auto wt = refract(wo, faceforward(wo, vec3(0, 1, 0)), etaI / etaT);
+            if (!wt) {
+                AKR_ASSERT(etaI > etaT);
+                return std::nullopt;
+            }
+            Spectrum ft = T * (1 - F);
+            sample.type = BSDFType::SpecularTransmission;
+
+            ft *= (etaI * etaI) / (etaT * etaT);
+            sample.pdf = 1 - F;
+            sample.wi = *wt;
+            sample.f = ft / abs_cos_theta(sample.wi);
+        }
+        return sample;
+    }
+
+    [[nodiscard]] Float MixBSDF::evaluate_pdf(const Vec3 &wo, const Vec3 &wi) const {
+        return (1.0 - fraction) * bsdf_A->evaluate_pdf(wo, wi) + fraction * bsdf_B->evaluate_pdf(wo, wi);
+    }
+    [[nodiscard]] Spectrum MixBSDF::evaluate(const Vec3 &wo, const Vec3 &wi) const {
+        return (1.0 - fraction) * bsdf_A->evaluate(wo, wi) + fraction * bsdf_B->evaluate(wo, wi);
+    }
+    [[nodiscard]] BSDFType MixBSDF::type() const { return BSDFType(bsdf_A->type() | bsdf_B->type()); }
+    std::optional<BSDFSample> MixBSDF::sample(const vec2 &u, const Vec3 &wo) const {
+        BSDFSample sample;
+        std::optional<BSDFSample> inner_sample;
+        Float pdf_select = 0;
+        if (u[0] < fraction) {
+            vec2 u_(u[0] / fraction, u[1]);
+            pdf_select = fraction;
+            inner_sample = bsdf_B->sample(u_, wo);
+        } else {
+            vec2 u_((u[0] - fraction) / (1.0 - fraction), u[1]);
+            pdf_select = 1.0 - fraction;
+            inner_sample = bsdf_A->sample(u_, wo);
+        }
+        sample = *inner_sample;
+        sample.pdf *= pdf_select;
+        return sample;
+    }
+    BSDF Material::evaluate(Sampler &sampler, Allocator<> alloc, const SurfaceInteraction &si) const {
+        auto sp = si.sp();
+        BSDF bsdf(Frame(si.ns, si.dpdu));
+        bsdf.set_closure(DiffuseBSDF(color.evaluate_s(sp)));
+        return bsdf;
+    }
     bool Scene::occlude(const Ray &ray) const { return accel->occlude1(ray); }
     std::optional<SurfaceInteraction> Scene::intersect(const Ray &ray) const {
         std::optional<Intersection> isct = accel->intersect1(ray);
@@ -98,12 +162,14 @@ namespace akari::render {
                     // not emissive
                 } else {
                     // emissived
+                    std::vector<const Light*> lights;
                     for (int i = 0; i < (int)inst.indices.size(); i++) {
                         AreaLight area_light(inst.get_triangle(i), inst.material->emission, false);
                         auto light = alloc.new_object<Light>(area_light);
                         scene->lights.emplace_back(light);
-                        inst.lights.emplace_back(light);
+                        lights.emplace_back(light);
                     }
+                    inst.lights = std::move(lights);
                 }
                 scene->instances.emplace_back(std::move(inst));
             }

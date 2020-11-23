@@ -88,7 +88,7 @@ namespace akari::render {
             }
             EMBREE_CHECK(rtcCommitScene(rtcScene));
         }
-          bool occlude1(const Ray &ray) const override {
+        bool occlude1(const Ray &ray) const override {
             auto rtcRay = toRTCRay(ray);
             RTCIntersectContext context;
             rtcInitIntersectContext(&context);
@@ -114,6 +114,12 @@ namespace akari::render {
             intersection.uv = vec2(rayHit.hit.u, rayHit.hit.v);
             intersection.t = rayHit.ray.tfar;
             return intersection;
+        }
+        Bounds3f world_bounds() const override {
+            RTCBounds bounds;
+            rtcGetSceneBounds(rtcScene, &bounds);
+            return Bounds3f(vec3(bounds.lower_x, bounds.lower_y, bounds.lower_z),
+                            vec3(bounds.upper_x, bounds.upper_y, bounds.upper_z));
         }
         ~EmbreeAccelImpl() {
             for (auto &&[_, scene] : per_mesh_scene) {

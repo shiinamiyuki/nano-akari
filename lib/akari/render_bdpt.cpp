@@ -34,7 +34,14 @@ namespace akari::render {
         };
         struct CameraVertex {};
         struct LightVertex {};
+
+        struct Vertex : Variant<CameraVertex, LightVertex, SurfaceVertex> {
+            using Variant::Variant;
+        };
+
+        using Path = BufferView<Vertex>;
     } // namespace bidir
+    
     Film render_bdpt(PTConfig config, const Scene &scene) {
         Film film(scene.camera->resolution());
         thread::parallel_for(thread::blocked_range<2>(film.resolution(), ivec2(16, 16)), [&](ivec2 id, uint32_t tid) {

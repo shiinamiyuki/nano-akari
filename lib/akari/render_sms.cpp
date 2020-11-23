@@ -383,7 +383,7 @@ namespace akari::render {
                     return std::nullopt;
                 } else if (depth < max_depth) {
                     SurfaceVertex vertex(wo, si);
-                    auto bsdf = material->evaluate(si);
+                    auto bsdf = material->evaluate(*sampler, allocator, si);
                     BSDFSampleContext sample_ctx{sampler->next1d(), sampler->next2d(), wo};
                     auto sample = bsdf.sample(sample_ctx);
                     if (!sample) {
@@ -443,19 +443,24 @@ namespace akari::render {
     } // namespace sms
     Film render_sms(SMSConfig config, const Scene &scene) {
         Film film(scene.camera->resolution());
-        auto Li = [&](const ivec2 p, Sampler &sampler) -> Spectrum {
-            sms::SMSPathTracer pt;
-            pt.min_depth = config.min_depth;
-            pt.max_depth = config.max_depth;
-            pt.L = Spectrum(0.0);
-            pt.beta = Spectrum(1.0);
-            pt.sampler = &sampler;
-            pt.scene = &scene;
-            pt.run_megakernel(&scene.camera.value(), p);
-            return pt.L;
-        };
+        std::vector<astd::pmr::monotonic_buffer_resource*> buffers;
+        for (size_t i = 0; i < thread::num_work_threads(); i++) {
+            buffers.emplace_back(new astd::pmr::monotonic_buffer_resource(astd::pmr::new_delete_resource()));
+        }
         thread::parallel_for(thread::blocked_range<2>(film.resolution(), ivec2(16, 16)), [&](ivec2 id, uint32_t tid) {
-            //  film.add_sample(id, Spectrum(1.0), 1.0);
+            auto Li = [&](const ivec2 p, Sampler &sampler) -> Spectrum {
+                sms::SMSPathTracer pt;
+                pt.min_depth = config.min_depth;
+                pt.max_depth = config.max_depth;
+                pt.L = Spectrum(0.0);
+                pt.beta = Spectrum(1.0);
+                pt.sampler = &sampler;
+                pt.scene = &scene;
+                pt.allocator = Allocator<>(buffers[tid]);
+                pt.run_megakernel(&scene.camera.value(), p);
+                buffers[tid]->release();
+                return pt.L;
+            };
             Sampler sampler = config.sampler;
             sampler.set_sample_index(id.y * film.resolution().x + id.x);
             for (int s = 0; s < config.spp; s++) {
@@ -463,6 +468,9 @@ namespace akari::render {
                 film.add_sample(id, L, 1.0);
             }
         });
+        for(auto buf: buffers){
+            delete buf;
+        }
         spdlog::info("render sms pt done");
         return film;
     }

@@ -87,7 +87,8 @@ namespace akari {
     };
 
     bool write_ldr(const Image &image, const fs::path &);
-
+    bool write_hdr(const Image &image, const fs::path &);
+    Image read_generic_image(const fs::path &);
 } // namespace akari
 
 #endif // AKARIRENDER_IMAGE_HPP

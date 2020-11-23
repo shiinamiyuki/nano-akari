@@ -21,6 +21,29 @@ namespace akari::scene {
     class SceneGraph;
 }
 namespace akari::render {
+    template <class T>
+    struct VarianceTracker {
+        std::optional<T> mean, m2;
+        int count = 0;
+        void update(T value) {
+            if (count == 0) {
+                mean = value;
+                m2 = T(0.0);
+            } else {
+                auto delta = value - *mean;
+                *mean += delta / T(count + 1);
+                *m2 += delta * (value - *mean);
+            }
+            count++;
+        }
+        std::optional<T> variance() const {
+            if (count < 2) {
+                return std::nullopt;
+            }
+            return *m2 / float(count * count);
+        }
+    };
+
 #pragma region distribution
     /*
      * Return the largest index i such that
@@ -426,7 +449,7 @@ namespace akari::render {
     };
     struct Sampler : Variant<LCGSampler, PCGSampler> {
         using Variant::Variant;
-        Sampler():Sampler(PCGSampler()){}
+        Sampler() : Sampler(PCGSampler()) {}
         Float next1d() { AKR_VAR_DISPATCH(next1d); }
         vec2 next2d() { return vec2(next1d(), next1d()); }
         void start_next_sample() { AKR_VAR_DISPATCH(start_next_sample); }
@@ -617,8 +640,100 @@ namespace akari::render {
             return sample;
         }
     };
+    class FresnelNoOp {
+      public:
+        [[nodiscard]] Spectrum evaluate(Float cosThetaI) const;
+    };
 
-    class BSDFClosure : public Variant<DiffuseBSDF> {
+    class FresnelConductor {
+        const Spectrum etaI, etaT, k;
+
+      public:
+        FresnelConductor(const Spectrum &etaI, const Spectrum &etaT, const Spectrum &k)
+            : etaI(etaI), etaT(etaT), k(k) {}
+        [[nodiscard]] Spectrum evaluate(Float cosThetaI) const;
+    };
+    class FresnelDielectric {
+        Float etaI, etaT;
+
+      public:
+        FresnelDielectric(const Float &etaI, const Float &etaT) : etaI(etaI), etaT(etaT) {}
+        [[nodiscard]] Spectrum evaluate(Float cosThetaI) const;
+    };
+    class Fresnel : public Variant<FresnelConductor, FresnelDielectric, FresnelNoOp> {
+      public:
+        using Variant::Variant;
+        Fresnel() : Variant(FresnelNoOp()) {}
+        [[nodiscard]] Spectrum evaluate(Float cosThetaI) const { AKR_VAR_DISPATCH(evaluate, cosThetaI); }
+    };
+    class SpecularReflection {
+        Spectrum R;
+
+      public:
+        SpecularReflection(const Spectrum &R) : R(R) {}
+        [[nodiscard]] Float evaluate_pdf(const Vec3 &wo, const Vec3 &wi) const { return 0.0f; }
+        [[nodiscard]] Spectrum evaluate(const Vec3 &wo, const Vec3 &wi) const { return Spectrum(0.0f); }
+        [[nodiscard]] BSDFType type() const { return BSDFType::SpecularReflection; }
+        std::optional<BSDFSample> sample(const vec2 &u, const Vec3 &wo) const {
+            BSDFSample sample;
+            sample.wi = glm::reflect(-wo, vec3(0, 1, 0));
+            sample.type = type();
+            sample.pdf = 1.0;
+            sample.f = R / (std::abs(cos_theta(sample.wi)));
+            return sample;
+        }
+    };
+    class SpecularTransmission {
+        Spectrum R;
+        Float eta;
+
+      public:
+        SpecularTransmission(const Spectrum &R, Float eta) : R(R), eta(eta) {}
+        [[nodiscard]] Float evaluate_pdf(const Vec3 &wo, const Vec3 &wi) const { return 0.0f; }
+        [[nodiscard]] Spectrum evaluate(const Vec3 &wo, const Vec3 &wi) const { return Spectrum(0.0f); }
+        [[nodiscard]] BSDFType type() const { return BSDFType::SpecularTransmission; }
+        std::optional<BSDFSample> sample(const vec2 &u, const Vec3 &wo) const {
+            BSDFSample sample;
+            Float etaIO = same_hemisphere(wo, vec3(0, 1, 0)) ? eta : 1.0f / eta;
+            auto wt = refract(wo, faceforward(wo, vec3(0, 1, 0)), etaIO);
+            if (!wt) {
+                return std::nullopt;
+            }
+            sample.wi = *wt;
+            sample.type = type();
+            sample.pdf = 1.0;
+            sample.f = R / (std::abs(cos_theta(sample.wi)));
+            return sample;
+        }
+    };
+
+    class AKR_EXPORT FresnelSpecular {
+        Spectrum R, T;
+        Float etaA, etaB;
+        FresnelDielectric fresnel;
+
+      public:
+        explicit FresnelSpecular(const Spectrum &R, const Spectrum &T, Float etaA, Float etaB)
+            : R(R), T(T), etaA(etaA), etaB(etaB), fresnel(etaA, etaB) {}
+        [[nodiscard]] BSDFType type() const { return BSDFType::SpecularTransmission | BSDFType::SpecularReflection; }
+        [[nodiscard]] Float evaluate_pdf(const vec3 &wo, const vec3 &wi) const { return 0; }
+        [[nodiscard]] Spectrum evaluate(const vec3 &wo, const vec3 &wi) const { return Spectrum(0); }
+        [[nodiscard]] std::optional<BSDFSample> sample(const vec2 &u, const Vec3 &wo) const;
+    };
+    class MixBSDF {
+      public:
+        Float fraction;
+        const BSDFClosure *bsdf_A = nullptr;
+        const BSDFClosure *bsdf_B = nullptr;
+        MixBSDF(Float fraction, const BSDFClosure *bsdf_A, const BSDFClosure *bsdf_B)
+            : fraction(fraction), bsdf_A(bsdf_A), bsdf_B(bsdf_B) {}
+        [[nodiscard]] Float evaluate_pdf(const Vec3 &wo, const Vec3 &wi) const;
+        [[nodiscard]] Spectrum evaluate(const Vec3 &wo, const Vec3 &wi) const;
+        [[nodiscard]] BSDFType type() const;
+        std::optional<BSDFSample> sample(const vec2 &u, const Vec3 &wo) const;
+    };
+    class BSDFClosure
+        : public Variant<DiffuseBSDF, SpecularReflection, SpecularTransmission, FresnelSpecular, MixBSDF> {
       public:
         using Variant::Variant;
         [[nodiscard]] Float evaluate_pdf(const Vec3 &wo, const Vec3 &wi) const {
@@ -762,12 +877,7 @@ namespace akari::render {
         Texture specular;
         Texture emission;
         Material() {}
-        BSDF evaluate(const SurfaceInteraction &si) const {
-            auto sp = si.sp();
-            BSDF bsdf(Frame(si.ns, si.dpdu));
-            bsdf.set_closure(DiffuseBSDF(color.evaluate_s(sp)));
-            return bsdf;
-        }
+        BSDF evaluate(Sampler &sampler, Allocator<> alloc, const SurfaceInteraction &si) const;
     };
 
     struct MeshInstance {
@@ -885,6 +995,7 @@ namespace akari::render {
         virtual void build(const Scene &scene, const std::shared_ptr<scene::SceneGraph> &scene_graph) = 0;
         virtual std::optional<Intersection> intersect1(const Ray &ray) const = 0;
         virtual bool occlude1(const Ray &ray) const = 0;
+        virtual Bounds3f world_bounds() const = 0;
     };
     std::shared_ptr<EmbreeAccel> create_embree_accel();
 

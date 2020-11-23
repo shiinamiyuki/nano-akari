@@ -14,6 +14,22 @@
 #include <OpenImageIO/imageio.h>
 #include <akari/image.h>
 namespace akari {
+    bool write_hdr(const Image &image, const fs::path &path) {
+        AKR_ASSERT(image.channels() == 3 || image.channels() == 4 || image.channels() == 1);
+        const auto ext = path.extension().string();
+        AKR_ASSERT(ext == ".exr");
+        auto dimension = image.resolution();
+        const int channels = image.channels();
+        using namespace OIIO;
+        std::unique_ptr<ImageOutput> out = ImageOutput::create(path.string());
+        if (!out)
+            return false;
+        ImageSpec spec(dimension.x, dimension.y, channels, TypeDesc::FLOAT);
+        out->open(path.string(), spec);
+        out->write_image(TypeDesc::FLOAT, image.data());
+        out->close();
+        return true;
+    }
     bool write_ldr(const Image &image, const fs::path &path) {
         AKR_ASSERT(image.channels() == 3 || image.channels() == 4 || image.channels() == 1);
         const auto ext = path.extension().string();
@@ -56,4 +72,8 @@ namespace akari {
         out->close();
         return true;
     }
+
+    // Image read_generic_image(const fs::path &path){
+
+    // }
 } // namespace akari

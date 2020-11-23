@@ -16,6 +16,7 @@
 #include <sstream>
 #include <akari/scenegraph.h>
 #include <akari/render.h>
+#include <akari/render_ppg.h>
 #include <akari/thread.h>
 #include <akari/serial.h>
 int main(int argc, char **argv) {
@@ -34,13 +35,25 @@ int main(int argc, char **argv) {
             cereal::JSONInputArchive ar(buffer);
             ar(scene_graph);
         }
+        // {
+        //     render::PTConfig config;
+        //     config.max_depth = 5;
+        //     config.sampler = render::PCGSampler();
+        //     Allocator<> alloc;
+        //     auto scene = render::create_scene(alloc, scene_graph);
+        //     auto film = render::render_pt(config, *scene);
+        //     auto image = film.to_rgb_image();
+        //     write_ldr(image, "out.png");
+        // }
         {
-            render::PTConfig config;
+            render::PPGConfig config;
+            config.min_depth = 4;
             config.max_depth = 5;
+            config.spp = 32;
             config.sampler = render::PCGSampler();
             Allocator<> alloc;
             auto scene = render::create_scene(alloc, scene_graph);
-            auto film = render::render_pt(config, *scene);
+            auto film = render::render_ppg(config, *scene);
             auto image = film.to_rgb_image();
             write_ldr(image, "out.png");
         }

@@ -170,12 +170,16 @@ namespace akari {
     }
 
     template <typename T>
-    struct vec_trait {};
+    struct vec_trait {
+        using value_type = void;
+        static constexpr bool is_vector = false;
+    };
 
     template <typename T, int N>
     struct vec_trait<Vector<T, N>> {
         using value_type = T;
         static constexpr int size = N;
+        static constexpr bool is_vector = true;
     };
 
     template <typename T, typename V = typename vec_trait<T>::value_type, int N = vec_trait<T>::size>
@@ -255,6 +259,7 @@ namespace akari {
     struct vec_trait<Color<T, N>> {
         using value_type = T;
         static constexpr int size = N;
+        static constexpr bool is_vector = true;
     };
 } // namespace akari
 namespace cereal {

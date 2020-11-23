@@ -25,6 +25,16 @@ namespace akari {
         const T *data() const { return data_.data(); }
         Array2D() : Array2D(ivec2(1, 1)) {}
         Array2D(const ivec2 &size) : Array2D(size, Allocator()) {}
+        static Array2D ones(const ivec2 &size){
+            Array2D tmp(size);
+            tmp.fill(T(1.0));
+            return tmp;
+        }
+        static Array2D zeros(const ivec2 &size){
+            Array2D tmp(size);
+            tmp.fill(T(0.0));
+            return tmp;
+        }
         Array2D(const ivec2 &size, Allocator alloc) : dimension_(size), data_(size.x * size.y, alloc) {}
         void fill(const T &v) {
             for (auto &i : data_) {
@@ -33,7 +43,6 @@ namespace akari {
         }
 #define ARRAY_OP(op, assign_op)                                                                                        \
     Array2D &operator assign_op(const T &rhs) {                                                                        \
-        AKR_ASSERT(glm::all(glm::equal(rhs.dimension_, dimension_)));                                                  \
         for (int i = 0; i < hprod(dimension_); i++) {                                                                  \
             data_[i] assign_op rhs;                                                                                    \
         }                                                                                                              \
@@ -71,6 +80,23 @@ namespace akari {
         ARRAY_OP(*, *=)
         ARRAY_OP(/, /=)
 #undef ARRAY_OP
+        // template <typename = std::enable_if_t<!vec_trait<T>::is_vector>>
+        Array2D safe_div(const Array2D &rhs) const {
+            AKR_ASSERT(glm::all(glm::equal(rhs.dimension_, dimension_)));
+            auto tmp = Array2D(rhs.dimension());
+            if constexpr (!vec_trait<T>::is_vector) {
+                for (int i = 0; i < hprod(dimension_); i++) {
+                    tmp.data_[i] = data_[i] / (rhs.data_[i] == T(0) ? T(1) : rhs.data_[i]);
+                }
+            } else {
+                using V = typename vec_trait<T>::value_type;
+                for (int i = 0; i < hprod(dimension_); i++) {
+                    tmp.data_[i] = data_[i] / T(select(glm::equal(rhs.data_[i], T(0.0)), T(1.0), rhs.data_[i]));
+                }
+            }
+            return tmp;
+        }
+
         ivec2 dimension() const { return dimension_; }
         T sum() const {
             return thread::parallel_reduce(data_.begin(), data_.end(), T(0.0), [](T x, T y) { return x + y; });

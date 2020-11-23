@@ -49,13 +49,14 @@ int main(int argc, char **argv) {
             render::PPGConfig config;
             config.min_depth = 4;
             config.max_depth = 5;
-            config.spp = 32;
+            config.spp = 128;
             config.sampler = render::PCGSampler();
             Allocator<> alloc;
             auto scene = render::create_scene(alloc, scene_graph);
-            auto film = render::render_ppg(config, *scene);
-            auto image = film.to_rgb_image();
+            auto image = render::render_ppg(config, *scene);
+            // auto image = film.to_rgb_image();
             write_ldr(image, "out.png");
+            write_hdr(image, "out.exr");
         }
         thread::finalize();
     } catch (std::exception &e) {

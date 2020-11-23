@@ -150,7 +150,7 @@ namespace akari::render {
                     vertices[i].beta *= k;
                 }
             }
-            
+
             void on_hit_light(const Light *light, const Vec3 &wo, const ShadingPoint &sp,
                               const std::optional<PathVertex> &prev_vertex) {
                 Spectrum I = light->Le(wo, sp);
@@ -169,7 +169,7 @@ namespace akari::render {
                     }
                 }
             }
-            
+
             // @param mat_pdf: supplied if material is already chosen
             std::optional<SurfaceVertex> on_surface_scatter(const Vec3 &wo, SurfaceInteraction &si,
                                                             const std::optional<PathVertex> &prev_vertex) noexcept {
@@ -190,9 +190,9 @@ namespace akari::render {
                         if (!sample)
                             return std::nullopt;
                         sample->pdf *= bsdfSamplingFraction;
-                        // if (BSDFType::Unset == (sample->type & BSDFType::Specular)) {
+                        if (BSDFType::Unset == (sample->type & BSDFType::Specular)) {
                             sample->pdf = sample->pdf + (1.0f - bsdfSamplingFraction) * dTree->pdf(sample->wi);
-                        // }
+                        }
                     } else {
                         sample = BSDFSample{};
                         auto w = dTree->sample(u1, u2);
@@ -292,16 +292,16 @@ namespace akari::render {
         }
         double ratio() const { return double(good.load()) / double(total.load()); }
     };
-    Film render_ppg(PPGConfig config, const Scene &scene) {
+    Image render_ppg(PPGConfig config, const Scene &scene) {
         std::shared_ptr<STree> sTree(new STree(scene.accel->world_bounds()));
-
         RatioStat non_zero_path;
-        Film film(scene.camera->resolution());
+        Array2D<Spectrum> sum(scene.camera->resolution());
+        Spectrum sum_weights(0.0);
         std::vector<astd::pmr::monotonic_buffer_resource *> buffers;
         for (size_t i = 0; i < thread::num_work_threads(); i++) {
             buffers.emplace_back(new astd::pmr::monotonic_buffer_resource(astd::pmr::new_delete_resource()));
         }
-        std::vector<Sampler> samplers(hprod(film.resolution()));
+        std::vector<Sampler> samplers(hprod(sum.dimension()));
         for (size_t i = 0; i < samplers.size(); i++) {
             samplers[i] = config.sampler;
             samplers[i].set_sample_index(i);
@@ -312,13 +312,15 @@ namespace akari::render {
         for (pass = 0; accumulatedSamples < trainingSamples; pass++) {
             non_zero_path.clear();
             size_t samples;
-            samples = 1ull << pass;
-            auto nextPassSamples = 2u << pass;
+            samples = 2ull << pass;
+            auto nextPassSamples = 4u << pass;
             if (accumulatedSamples + samples + nextPassSamples > (uint32_t)trainingSamples) {
                 samples = (uint32_t)trainingSamples - accumulatedSamples;
             }
             spdlog::info("Learning pass {}, spp:{}", pass + 1, samples);
             accumulatedSamples += samples;
+            Film film(scene.camera->resolution());
+            Array2D<Spectrum> variance(scene.camera->resolution());
             thread::parallel_for(
                 thread::blocked_range<2>(film.resolution(), ivec2(16, 16)), [&](ivec2 id, uint32_t tid) {
                     auto Li = [&](const ivec2 p, Sampler &sampler) -> Spectrum {
@@ -344,18 +346,26 @@ namespace akari::render {
                         return pt.L;
                     };
                     Sampler &sampler = samplers[id.x + id.y * film.resolution().x];
+                    VarianceTracker<Spectrum> var;
                     for (int s = 0; s < config.spp; s++) {
                         sampler.start_next_sample();
                         auto L = Li(id, sampler);
-                        (void)L;
-                        // film.add_sample(id, L, 1.0);
+                        var.update(L);
+                        film.add_sample(id, L, 1.0);
                     }
+                    variance(id) = var.variance().value();
                 });
+            Array2D<Spectrum> pixel_weight = Array2D<Spectrum>::ones(variance.dimension()).safe_div(variance);
+            Spectrum weight = pixel_weight.sum();
+            sum += Spectrum(weight) * film.to_array2d();
+            sum_weights += weight;
             spdlog::info("Refining SDTree; pass: {}", pass + 1);
             spdlog::info("nodes: {}", sTree->nodes.size());
             spdlog::info("non zero path:{}%", non_zero_path.ratio() * 100);
             sTree->refine(12000 * std::sqrt(samples));
         }
+        Film film(scene.camera->resolution());
+        Array2D<Spectrum> variance(scene.camera->resolution());
         thread::parallel_for(thread::blocked_range<2>(film.resolution(), ivec2(16, 16)), [&](ivec2 id, uint32_t tid) {
             auto Li = [&](const ivec2 p, Sampler &sampler) -> Spectrum {
                 ppg::GuidedPathTracer pt;
@@ -379,16 +389,25 @@ namespace akari::render {
                 return pt.L;
             };
             Sampler &sampler = samplers[id.x + id.y * film.resolution().x];
+            VarianceTracker<Spectrum> var;
             for (int s = 0; s < config.spp; s++) {
                 sampler.start_next_sample();
                 auto L = Li(id, sampler);
+                var.update(L);
                 film.add_sample(id, L, 1.0);
             }
+            variance(id) = var.variance().value();
         });
+        {
+            Array2D<Spectrum> pixel_weight = Array2D<Spectrum>::ones(variance.dimension()).safe_div(variance);
+            Spectrum weight = pixel_weight.sum();
+            sum += Spectrum(weight) * film.to_array2d();
+            sum_weights += weight;
+        }
         for (auto buf : buffers) {
             delete buf;
         }
-        spdlog::info("render pt done");
-        return film;
+        spdlog::info("render ppg done");
+        return array2d_to_rgb(sum / Spectrum(sum_weights));
     }
 } // namespace akari::render

@@ -72,6 +72,7 @@ namespace akari {
         [[nodiscard]] ivec2 resolution() const { return ivec2(array.dimension().y, array.dimension().z); }
     };
     using Image = TImage<float>;
+    Image array2d_to_rgb(const Array2D<Color3f> & array);
     inline Image rgba_image(const ivec2 &dim) { return Image({"R", "G", "B", "A"}, dim); }
     inline Image rgb_image(const ivec2 &dim) { return Image({"R", "G", "B"}, dim); }
     inline bool is_rgb_image(const Image &image) {

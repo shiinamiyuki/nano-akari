@@ -132,6 +132,7 @@ namespace akari {
                 std::lock_guard<std::mutex> lock(m);
                 acc = f(acc, cache);
             });
+            return acc;
         }
         AKR_EXPORT void init(size_t num_threads);
         AKR_EXPORT void finalize();

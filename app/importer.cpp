@@ -92,6 +92,7 @@ P<SceneGraph> import(const std::string &file) {
         }
         for (uint32_t i = 0; i < ai_node->mNumMeshes; i++) {
             P<Instance> instance(new Instance());
+            instance->name = meshes[ai_node->mMeshes[i]]->name;
             instance->transform = create_transform(ai_node->mTransformation);
             instance->mesh = meshes[ai_node->mMeshes[i]];
             instance->material = materials[ai_scene->mMeshes[ai_node->mMeshes[i]]->mMaterialIndex];

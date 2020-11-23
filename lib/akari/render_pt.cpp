@@ -168,6 +168,7 @@ namespace akari::render {
                     vertex.ray = Ray(si.p, sample->wi, Eps / std::abs(glm::dot(si.ng, sample->wi)));
                     vertex.beta = sample->f * std::abs(glm::dot(si.ns, sample->wi)) / sample->pdf;
                     vertex.pdf = sample->pdf;
+                    vertex.sampled_lobe = sample->type;
                     return vertex;
                 }
                 return std::nullopt;

@@ -495,6 +495,6 @@ namespace akari::render {
         int max_depth = 5;
         int spp = 16;
     };
-    Film render_ppg(PPGConfig config, const Scene &scene);
+    Image render_ppg(PPGConfig config, const Scene &scene);
 
 } // namespace akari::render

@@ -14,6 +14,19 @@
 #include <OpenImageIO/imageio.h>
 #include <akari/image.h>
 namespace akari {
+    Image array2d_to_rgb(const Array2D<Color3f> &array) {
+        Image img = rgb_image(array.dimension());
+        thread::parallel_for(array.dimension().y, [&](uint32_t y, uint32_t) {
+            for (int x = 0; x < array.dimension().x; x++) {
+                auto color = array(x,y);
+                img(x, y, 0) = color[0];
+                img(x, y, 1) = color[1];
+                img(x, y, 2) = color[2];
+
+            }
+        });
+        return img;
+    }
     bool write_hdr(const Image &image, const fs::path &path) {
         AKR_ASSERT(image.channels() == 3 || image.channels() == 4 || image.channels() == 1);
         const auto ext = path.extension().string();

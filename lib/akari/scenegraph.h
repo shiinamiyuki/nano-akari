@@ -39,6 +39,7 @@ namespace akari::scene {
         P<Texture> metallic;
         P<Texture> roughness;
         P<Texture> emission;
+        Material();
         void commit() {}
         AKR_SER(color, specular, metallic, roughness, emission)
     };
@@ -61,11 +62,12 @@ namespace akari::scene {
 
     class Instance {
       public:
+        std::string name;
         TRSTransform transform;
         P<Mesh> mesh;
         P<Material> material;
         void commit() { material->commit(); }
-        AKR_SER(transform, mesh, material)
+        AKR_SER(name, transform, mesh, material)
     };
     class Node {
       public:

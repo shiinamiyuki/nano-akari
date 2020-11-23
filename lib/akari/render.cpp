@@ -77,7 +77,14 @@ namespace akari::render {
     BSDF Material::evaluate(Sampler &sampler, Allocator<> alloc, const SurfaceInteraction &si) const {
         auto sp = si.sp();
         BSDF bsdf(Frame(si.ns, si.dpdu));
-        bsdf.set_closure(DiffuseBSDF(color.evaluate_s(sp)));
+        auto m = metallic.evaluate_f(sp);
+        if (m < 1e-5f) {
+            bsdf.set_closure(DiffuseBSDF(color.evaluate_s(sp)));
+        }else if(m > 1 - 1e-5f){
+            bsdf.set_closure(SpecularReflection(color.evaluate_s(sp)));
+        }else{
+            AKR_ASSERT(false);
+        }
         return bsdf;
     }
     bool Scene::occlude(const Ray &ray) const { return accel->occlude1(ray); }
@@ -140,6 +147,7 @@ namespace akari::render {
                 return it->second;
             auto mat = scene->allocator.new_object<Material>();
             mat->color = create_tex(mat_node->color);
+            mat->metallic = create_tex(mat_node->metallic);
             mat->emission = create_tex(mat_node->emission);
             mat_map.emplace(mat_node.get(), mat);
             scene->materials.emplace_back(mat);
@@ -162,7 +170,7 @@ namespace akari::render {
                     // not emissive
                 } else {
                     // emissived
-                    std::vector<const Light*> lights;
+                    std::vector<const Light *> lights;
                     for (int i = 0; i < (int)inst.indices.size(); i++) {
                         AreaLight area_light(inst.get_triangle(i), inst.material->emission, false);
                         auto light = alloc.new_object<Light>(area_light);

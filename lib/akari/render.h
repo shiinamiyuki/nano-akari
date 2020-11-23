@@ -465,6 +465,21 @@ namespace akari::render {
             radiance(p) += sample;
         }
         [[nodiscard]] ivec2 resolution() const { return radiance.dimension(); }
+        Array2D<T> to_array2d() const {
+            Array2D<T> array(resolution());
+            thread::parallel_for(resolution().y, [&](uint32_t y, uint32_t) {
+                for (int x = 0; x < resolution().x; x++) {
+                    if (weight(x, y) != 0) {
+                        auto color = (radiance(x, y)) / weight(x, y);
+                        array(x, y) = color;
+                    } else {
+                        auto color = radiance(x, y);
+                        array(x, y) = color;
+                    }
+                }
+            });
+            return array;
+        }
         template <typename = std::enable_if_t<std::is_same_v<T, Color3f>>>
         Image to_rgb_image() const {
             Image image = rgb_image(resolution());

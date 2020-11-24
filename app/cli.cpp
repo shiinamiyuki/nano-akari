@@ -19,6 +19,8 @@
 #include <akari/render_ppg.h>
 #include <akari/thread.h>
 #include <akari/serial.h>
+#include <cxxopts.hpp>
+
 int main(int argc, char **argv) {
     using namespace akari;
     thread::init(std::thread::hardware_concurrency());
@@ -51,7 +53,7 @@ int main(int argc, char **argv) {
             render::PPGConfig config;
             config.min_depth = 4;
             config.max_depth = 7;
-            config.spp = 1024;
+            config.spp = 2048;
             config.sampler = render::PCGSampler();
             Allocator<> alloc;
             auto scene = render::create_scene(alloc, scene_graph);

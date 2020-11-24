@@ -247,7 +247,8 @@ namespace akari::render {
                     }
                     auto [_dTree, tree_depth] = sTree->dTree(si->p);
                     dTree = _dTree;
-                    auto wo = -ray.d;
+                    // const auto dtree_voxel_size = sTree->box.size() * glm::pow(vec3(0.5), vec3(tree_depth));
+                    const auto wo = -ray.d;
                     auto vertex = on_surface_scatter(wo, *si, prev_vertex);
                     if (!vertex) {
                         break;
@@ -263,7 +264,7 @@ namespace akari::render {
                     }
                     vertices[n_vertices].L = Spectrum(0);
                     {
-                        // vec3 u = vec3(sampler->next1d(), sampler->next1d(), sampler->next1d());
+                        // const vec3 u = vec3(sampler->next1d(), sampler->next1d(), sampler->next1d());
                         auto p = si->p;
                         // p = sTree->box.clip(p + dtree_voxel_size * (u - vec3(0.5)));
                         vertices[n_vertices].p = p;
@@ -338,7 +339,8 @@ namespace akari::render {
         }
         uint32_t pass = 0;
         uint32_t accumulatedSamples = 0;
-        uint32_t trainingSamples = config.spp;
+        uint32_t trainingSamples = config.spp / 2;
+        uint32_t render_samples = config.spp - trainingSamples;
         for (pass = 0; accumulatedSamples < trainingSamples; pass++) {
             non_zero_path.clear();
             size_t samples;
@@ -387,9 +389,9 @@ namespace akari::render {
                         variance(id) = var.variance().value();
                 });
             if (samples >= 2) {
-                Array2D<Spectrum> pixel_weight = Array2D<Spectrum>::ones(variance.dimension()).safe_div(variance);
-                Spectrum weight = pixel_weight.sum();
-                all_samples.emplace_back(std::move(film.to_array2d()), weight);
+                Spectrum avg_var = variance.sum() / hprod(variance.dimension());
+                all_samples.emplace_back(std::move(film.to_array2d()), avg_var);
+                spdlog::info("variance: {}", average(avg_var));
             }
             spdlog::info("Refining SDTree; pass: {}", pass + 1);
             spdlog::info("nodes: {}", sTree->nodes.size());
@@ -422,7 +424,7 @@ namespace akari::render {
             };
             Sampler &sampler = samplers[id.x + id.y * film.resolution().x];
             VarianceTracker<Spectrum> var;
-            for (int s = 0; s < config.spp; s++) {
+            for (uint32_t s = 0; s < render_samples; s++) {
                 sampler.start_next_sample();
                 auto L = Li(id, sampler);
                 var.update(L);
@@ -431,24 +433,26 @@ namespace akari::render {
             variance(id) = var.variance().value();
         });
         {
-            Array2D<Spectrum> pixel_weight = Array2D<Spectrum>::ones(variance.dimension()).safe_div(variance);
-            Spectrum weight = pixel_weight.sum();
-            all_samples.emplace_back(std::move(film.to_array2d()), weight);
+            Spectrum avg_var = variance.sum() / hprod(variance.dimension());
+            all_samples.emplace_back(std::move(film.to_array2d()), avg_var);
+            spdlog::info("variance: {}", average(avg_var));
         }
         for (auto buf : buffers) {
             delete buf;
         }
         spdlog::info("render ppg done");
         Array2D<Spectrum> sum(scene.camera->resolution());
-        Spectrum sum_weights;
+        double sum_weights = 0.0;
         {
             int cnt = 0;
             for (auto it = all_samples.rbegin(); cnt < 4 && it != all_samples.rend(); it++) {
-                sum += it->first * it->second;
-                sum_weights += it->second;
+                auto var = std::clamp<Float>(average(it->second), 1e-6, 1e5);
+                auto weight = 1.0 / var;
+                sum += it->first * Spectrum(weight);
+                sum_weights += weight;
                 cnt++;
             }
         }
-        return array2d_to_rgb(sum / sum_weights);
+        return array2d_to_rgb(sum / Spectrum(sum_weights));
     }
 } // namespace akari::render

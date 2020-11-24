@@ -1,5 +1,6 @@
+find_package(cxxopts REQUIRED)
 add_executable(akari-import importer.cpp)
-target_link_libraries(akari-import PRIVATE nano-akari assimp::assimp)
+target_link_libraries(akari-import PRIVATE nano-akari assimp::assimp  cxxopts::cxxopts)
 
 add_executable(akari-cli cli.cpp)
 target_link_libraries(akari-cli PRIVATE nano-akari)

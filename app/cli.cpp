@@ -38,6 +38,7 @@ int main(int argc, char **argv) {
         // {
         //     render::PTConfig config;
         //     config.max_depth = 5;
+        //     config.spp = 256;
         //     config.sampler = render::PCGSampler();
         //     Allocator<> alloc;
         //     auto scene = render::create_scene(alloc, scene_graph);

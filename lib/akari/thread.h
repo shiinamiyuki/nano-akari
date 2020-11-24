@@ -21,7 +21,26 @@
 #include <future>
 
 namespace akari {
+    struct SpinLock {
+        std::atomic<bool> lock_ = {false};
 
+        void lock() {
+            for (;;) {
+                if (!lock_.exchange(true, std::memory_order_acquire)) {
+                    break;
+                }
+                while (lock_.load(std::memory_order_relaxed)) {
+#ifdef _MSC_VER
+                    _mm_pause();
+#elif defined(__GNUC__) || defined(__clang__)
+                    __builtin_ia32_pause();
+#endif
+                }
+            }
+        }
+
+        void unlock() { lock_.store(false, std::memory_order_release); }
+    };
     class AtomicFloat {
         std::atomic<float> val;
 
@@ -162,7 +181,7 @@ namespace akari {
     };
     template <class _Fty, class... _ArgTypes>
     Future<std::invoke_result_t<std::decay_t<_Fty>, std::decay_t<_ArgTypes>...>>
-    async_do(std::launch policy, _Fty &&_Fnarg, _ArgTypes &&... _Args) {
+    async_do(std::launch policy, _Fty &&_Fnarg, _ArgTypes &&..._Args) {
         return std::async(policy, std::forward<_Fty>(_Fnarg), std::forward<_ArgTypes>(_Args)...);
     }
 } // namespace akari

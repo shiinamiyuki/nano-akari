@@ -30,6 +30,8 @@ namespace akari::render {
             Ray ray;
             Spectrum beta;
             std::optional<BSDF> bsdf;
+            Spectrum f;
+            Float bsdf_pdf = 0.0;
             Float pdf = 0.0;
             BSDFType sampled_lobe = BSDFType::Unset;
             // SurfaceVertex() = default;
@@ -83,6 +85,11 @@ namespace akari::render {
             struct PPGVertex {
                 vec3 wi;
                 vec3 p;
+                Spectrum bsdf;
+                Float bsdf_pdf = 0.0;
+                Float sample_pdf = 0.0;
+                bool is_delta = false;
+                Vec3 n;
                 Spectrum L;
                 Spectrum beta;
             };
@@ -90,7 +97,6 @@ namespace akari::render {
             int n_vertices = 0;
             bool training = false;
             DTreeWrapper *dTree = nullptr;
-            Float bsdfSamplingFraction = 0.5;
             static Float mis_weight(Float pdf_A, Float pdf_B) {
                 pdf_A *= pdf_A;
                 pdf_B *= pdf_B;
@@ -136,7 +142,7 @@ namespace akari::render {
             }
 
             void accumulate_radiance_wo_beta(const Spectrum &r) {
-                Float irradiance = luminance(r);
+                Float irradiance = average(r);
                 AKR_ASSERT(irradiance >= 0 && !std::isnan(irradiance) && !std::isinf(irradiance));
                 L += beta * r;
                 for (int i = 0; i < n_vertices && training; i++) {
@@ -184,11 +190,15 @@ namespace akari::render {
                     SurfaceVertex vertex(wo, si);
                     auto bsdf = material->evaluate(*sampler, allocator, si);
                     BSDFSampleContext sample_ctx{sampler->next1d(), sampler->next2d(), wo};
+                    Float bsdf_pdf = 0.0;
                     auto sample = bsdf.sample(sample_ctx);
-                    if (u0 < bsdfSamplingFraction) {
+                    bool is_delta = BSDFType::Unset != (bsdf.type() & BSDFType::Specular);
+                    const Float bsdfSamplingFraction = is_delta ? 1.0 : 0.5;//dTree->selection_prob();
+                    if (is_delta || u0 < bsdfSamplingFraction) {
                         sample = bsdf.sample(sample_ctx);
                         if (!sample)
                             return std::nullopt;
+                        bsdf_pdf = sample->pdf;
                         sample->pdf *= bsdfSamplingFraction;
                         if (BSDFType::Unset == (sample->type & BSDFType::Specular)) {
                             sample->pdf = sample->pdf + (1.0f - bsdfSamplingFraction) * dTree->pdf(sample->wi);
@@ -202,15 +212,17 @@ namespace akari::render {
                         sample->f = bsdf.evaluate(wo, sample->wi);
                         sample->type = (BSDFType::All & ~BSDFType::Specular);
                         sample->pdf *= 1.0f - bsdfSamplingFraction;
-                        sample->pdf = sample->pdf + bsdfSamplingFraction * bsdf.evaluate_pdf(wo, sample->wi);
+                        bsdf_pdf = bsdf.evaluate_pdf(wo, sample->wi);
+                        sample->pdf = sample->pdf + bsdfSamplingFraction * bsdf_pdf;
                     }
-                    AKR_CHECK(!std::isnan(sample->pdf));
-                    AKR_CHECK(sample->pdf >= 0.0);
-                    AKR_CHECK(hmin(sample->f) >= 0.0f);
+                    AKR_ASSERT(!std::isnan(sample->pdf));
+                    AKR_ASSERT(sample->pdf >= 0.0);
+                    AKR_ASSERT(hmin(sample->f) >= 0.0f);
                     if (std::isnan(sample->pdf) || sample->pdf == 0.0f) {
                         return std::nullopt;
                     }
-                    vertex.bsdf = bsdf;
+                    vertex.f = sample->f;
+                    vertex.bsdf_pdf = bsdf_pdf;
                     vertex.ray = Ray(si.p, sample->wi, Eps / std::abs(glm::dot(si.ng, sample->wi)));
                     vertex.beta = sample->f * std::abs(glm::dot(si.ns, sample->wi)) / sample->pdf;
                     vertex.pdf = sample->pdf;
@@ -252,6 +264,11 @@ namespace akari::render {
                         // p = sTree->box.clip(p + dtree_voxel_size * (u - vec3(0.5)));
                         vertices[n_vertices].p = p;
                     }
+                    vertices[n_vertices].bsdf_pdf = vertex->bsdf_pdf;
+                    vertices[n_vertices].sample_pdf = vertex->pdf;
+                    vertices[n_vertices].bsdf = vertex->f;
+                    vertices[n_vertices].is_delta = (vertex->sampled_lobe & BSDFType::Specular) != BSDFType::Unset;
+                    vertices[n_vertices].n = si->ns;
                     vertices[n_vertices].wi = vertex->ray.d;
                     vertices[n_vertices].beta = Spectrum(1.0 / vertex->pdf);
                     accumulate_beta(vertex->beta);
@@ -270,9 +287,18 @@ namespace akari::render {
                 }
                 if (training) {
                     for (int i = 0; i < n_vertices; i++) {
-                        auto irradiance = luminance(clamp_zero(vertices[i].L));
+                        auto irradiance = average(clamp_zero(vertices[i].L));
                         AKR_CHECK(irradiance >= 0);
-                        sTree->deposit(vertices[i].p, vertices[i].wi, irradiance);
+                        SDTreeDepositRecord record;
+                        record.p = vertices[i].p;
+                        record.wi = vertices[i].wi;
+                        record.radiance = irradiance;
+                        record.n = vertices[i].n;
+                        record.bsdf = average(vertices[i].bsdf);
+                        record.is_delta = vertices[i].is_delta;
+                        record.sample_pdf = vertices[i].sample_pdf;
+                        record.bsdf_pdf = vertices[i].bsdf_pdf;
+                        sTree->deposit(record);
                     }
                 }
             }
@@ -311,8 +337,8 @@ namespace akari::render {
         for (pass = 0; accumulatedSamples < trainingSamples; pass++) {
             non_zero_path.clear();
             size_t samples;
-            samples = 2ull << pass;
-            auto nextPassSamples = 4u << pass;
+            samples = 1ull << pass;
+            auto nextPassSamples = 2u << pass;
             if (accumulatedSamples + samples + nextPassSamples > (uint32_t)trainingSamples) {
                 samples = (uint32_t)trainingSamples - accumulatedSamples;
             }
@@ -346,17 +372,20 @@ namespace akari::render {
                     };
                     Sampler &sampler = samplers[id.x + id.y * film.resolution().x];
                     VarianceTracker<Spectrum> var;
-                    for (int s = 0; s < config.spp; s++) {
+                    for (int s = 0; s < samples; s++) {
                         sampler.start_next_sample();
                         auto L = Li(id, sampler);
                         var.update(L);
                         film.add_sample(id, L, 1.0);
                     }
-                    variance(id) = var.variance().value();
+                    if (samples >= 2)
+                        variance(id) = var.variance().value();
                 });
-            Array2D<Spectrum> pixel_weight = Array2D<Spectrum>::ones(variance.dimension()).safe_div(variance);
-            Spectrum weight = pixel_weight.sum();
-            all_samples.emplace_back(std::move(film.to_array2d()), weight);
+            if (samples >= 2) {
+                Array2D<Spectrum> pixel_weight = Array2D<Spectrum>::ones(variance.dimension()).safe_div(variance);
+                Spectrum weight = pixel_weight.sum();
+                all_samples.emplace_back(std::move(film.to_array2d()), weight);
+            }
             spdlog::info("Refining SDTree; pass: {}", pass + 1);
             spdlog::info("nodes: {}", sTree->nodes.size());
             spdlog::info("non zero path:{}%", non_zero_path.ratio() * 100);
@@ -408,8 +437,8 @@ namespace akari::render {
         Array2D<Spectrum> sum(scene.camera->resolution());
         Spectrum sum_weights;
         {
-            int cnt =0 ;
-            for(auto it = all_samples.rbegin(); cnt < 4 && it != all_samples.rend(); it++){
+            int cnt = 0;
+            for (auto it = all_samples.rbegin(); cnt < 4 && it != all_samples.rend(); it++) {
                 sum += it->first * it->second;
                 sum_weights += it->second;
                 cnt++;

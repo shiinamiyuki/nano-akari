@@ -18,6 +18,45 @@
 #include <akari/render.h>
 #include <akari/thread.h>
 namespace akari::render {
+    struct AdamOptimizer {
+        int t = 0;
+        double m = 0;
+        double v = 0;
+        double beta1 = 0.9;
+        double beta2 = 0.999;
+        double eps = 1e-8;
+        double learning_rate = 0.01;
+        double regularization = 0.01;
+        double theta = 0.0;
+        void step(double grad) {
+            // AKR_ASSERT(!std::isnan(grad));
+            if (std::isnan(grad))
+                return;
+            if (std::isinf(grad)) {
+                grad = grad > 0.0 ? 100.0 : -100.0;
+            }
+            t++;
+            double l = learning_rate * std::sqrt(1 - std::pow(beta1, t)) / std::pow(beta2, t);
+            m = beta1 * m + (1.0 - beta1) * grad;
+            v = beta2 * v + (1.0 - beta2) * grad * grad;
+            theta = theta - l * m / (std::sqrt(v) + eps);
+            theta = std::clamp<double>(theta, -20.0, 20.0);
+            AKR_ASSERT(!std::isnan(m));
+            AKR_ASSERT(!std::isnan(v));
+            AKR_ASSERT(!std::isnan(theta));
+        }
+    };
+    struct SDTreeDepositRecord {
+        bool is_delta = false;
+        Vec3 p;
+        Vec3 wi;
+        Vec3 n;
+        Float bsdf = 0.0;
+        Float bsdf_pdf = 0.0;
+        Float radiance = 0.0;
+        Float sample_pdf = 0.0;
+    };
+
     class QTreeNode {
       public:
         std::array<AtomicFloat, 4> _sum;
@@ -302,7 +341,18 @@ namespace akari::render {
       public:
         bool valid = true;
         DTree building, sampling;
-
+        AdamOptimizer opt;
+        SpinLock lock;
+        // std::mutex lock;
+        DTreeWrapper() = default;
+        DTreeWrapper(const DTreeWrapper &rhs) : building(rhs.building), sampling(rhs.sampling), opt(rhs.opt) {}
+        DTreeWrapper &operator=(const DTreeWrapper &rhs) {
+            building = rhs.building;
+            sampling = rhs.sampling;
+            opt = rhs.opt;
+            return *this;
+        }
+        double selection_prob() const { return 1.0 / (1.0 + std::exp(-opt.theta)); }
         //        DTreeWrapper(){
         //            sampling.nodes[0].setSum(0.25);
         //        }
@@ -313,13 +363,31 @@ namespace akari::render {
 
         Float eval(const vec3 &w) { return sampling.eval(dirToCanonical(w)); }
 
-        void deposit(const vec3 &w, Float e) {
+        void deposit(const SDTreeDepositRecord &record) {
             AKR_CHECK(!building.nodes.empty());
-            auto p = dirToCanonical(w);
-            building.deposit(p, e);
+            auto p = dirToCanonical(record.wi);
+            building.deposit(p, record.radiance);
+            return;
+            // https://tom94.net/data/courses/vorba19guiding/vorba19guiding.pdf
+            const auto product_estimate = record.radiance * record.bsdf * abs(dot(record.n, record.wi));
+            const auto learned_pdf = record.is_delta ? 0.0 : pdf(record.wi);
+
+            {
+                std::lock_guard<SpinLock> guard(lock);
+                const auto a = selection_prob();
+                const auto combined_pdf = a * record.bsdf_pdf + (1.0 - a) * learned_pdf;
+                const auto grad_a =
+                    product_estimate * (record.bsdf_pdf - learned_pdf) / (record.sample_pdf * combined_pdf);
+                const auto grad_theta = grad_a * a * (1.0 - a);
+                const auto reg_grad = opt.regularization * opt.theta;
+                opt.step(grad_theta + reg_grad);
+                // if(product_estimate > 0.0)
+                //  spdlog::info("grad = {}, theta = {}", grad_theta, opt.theta);
+            }
         }
 
         void refine() {
+            spdlog::info("a = {}", selection_prob());
             AKR_CHECK(building.sum.value() >= 0.0f);
             //            building._build();
             sampling = building;
@@ -405,17 +473,18 @@ namespace akari::render {
             }
         }
 
-        void deposit(vec3 p, const vec3 &w, Float irradiance, std::vector<STreeNode> &nodes) {
+        void deposit(SDTreeDepositRecord record, std::vector<STreeNode> &nodes) {
             if (isLeaf()) {
                 nSample++;
-                dTree.deposit(w, irradiance);
+                dTree.deposit(record);
+
             } else {
-                if (p[axis] < 0.5f) {
-                    p[axis] *= 2.0f;
-                    nodes.at(_children[0]).deposit(p, w, irradiance, nodes);
+                if (record.p[axis] < 0.5f) {
+                    record.p[axis] *= 2.0f;
+                    nodes.at(_children[0]).deposit(record, nodes);
                 } else {
-                    p[axis] = (p[axis] - 0.5f) * 2.0f;
-                    nodes.at(_children[1]).deposit(p, w, irradiance, nodes);
+                    record.p[axis] = (record.p[axis] - 0.5f) * 2.0f;
+                    nodes.at(_children[1]).deposit(record, nodes);
                 }
             }
         }
@@ -443,17 +512,17 @@ namespace akari::render {
 
         Float eval(const vec3 &p, const vec3 &w) { return nodes.at(0).eval(box.offset(p), w, nodes); }
 
-        void deposit(vec3 p, const vec3 &w, Float irradiance) {
+        void deposit(SDTreeDepositRecord record) {
+            auto &irradiance = record.radiance;
             AKR_ASSERT(irradiance >= 0 && !std::isnan(irradiance) && !std::isinf(irradiance));
             if (irradiance >= 0 && !std::isnan(irradiance)) {
-                nodes.at(0).deposit(box.offset(p), w, irradiance, nodes);
+                record.p = box.offset(record.p);
+                nodes.at(0).deposit(record, nodes);
             }
         }
 
         void refine(int idx, size_t maxSample, int depth) {
             if (nodes[idx].isLeaf() && (size_t)nodes[idx].nSample > maxSample) {
-                //                log::log("sum {}\n", nodes[idx].dTree.building.sum.value());
-                //                log::log("samples: {} {}\n", (int) nodes[idx].nSample,maxSample);
                 for (int i = 0; i < 2; i++) {
                     nodes[idx]._children[i] = nodes.size();
                     nodes.emplace_back();

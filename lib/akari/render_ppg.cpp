@@ -125,8 +125,11 @@ namespace akari::render {
                     light_pdf *= light_sample.pdf;
                     auto f = light_sample.I * vertex.bsdf->evaluate(vertex.wo, light_sample.wi) *
                              std::abs(dot(si.ns, light_sample.wi));
+                    const Float bsdfSamplingFraction = 0.5; // dTree->selection_prob();
                     Float bsdf_pdf = vertex.bsdf->evaluate_pdf(vertex.wo, light_sample.wi);
-                    lighting.color = f / light_pdf * mis_weight(light_pdf, bsdf_pdf);
+                    Float mix_psdf =
+                        bsdf_pdf * bsdfSamplingFraction + (1.0 - bsdfSamplingFraction) * dTree->pdf(light_sample.wi);
+                    lighting.color = f / light_pdf * mis_weight(light_pdf, mix_psdf);
                     lighting.shadow_ray = light_sample.shadow_ray;
                     lighting.pdf = light_pdf;
                     return lighting;
@@ -193,7 +196,7 @@ namespace akari::render {
                     Float bsdf_pdf = 0.0;
                     auto sample = bsdf.sample(sample_ctx);
                     bool is_delta = BSDFType::Unset != (bsdf.type() & BSDFType::Specular);
-                    const Float bsdfSamplingFraction = is_delta ? 1.0 : 0.5;//dTree->selection_prob();
+                    const Float bsdfSamplingFraction = is_delta ? 1.0 : 0.5; // dTree->selection_prob();
                     if (is_delta || u0 < bsdfSamplingFraction) {
                         sample = bsdf.sample(sample_ctx);
                         if (!sample)
@@ -221,6 +224,7 @@ namespace akari::render {
                     if (std::isnan(sample->pdf) || sample->pdf == 0.0f) {
                         return std::nullopt;
                     }
+                    vertex.bsdf = bsdf;
                     vertex.f = sample->f;
                     vertex.bsdf_pdf = bsdf_pdf;
                     vertex.ray = Ray(si.p, sample->wi, Eps / std::abs(glm::dot(si.ng, sample->wi)));
@@ -319,6 +323,7 @@ namespace akari::render {
         double ratio() const { return double(good.load()) / double(total.load()); }
     };
     Image render_ppg(PPGConfig config, const Scene &scene) {
+        bool useNEE = true;
         std::shared_ptr<STree> sTree(new STree(scene.accel->world_bounds()));
         RatioStat non_zero_path;
         std::vector<std::pair<Array2D<Spectrum>, Spectrum>> all_samples;
@@ -361,7 +366,7 @@ namespace akari::render {
                         pt.beta = Spectrum(1.0);
                         pt.sampler = &sampler;
                         pt.scene = &scene;
-                        pt.useNEE = false;
+                        pt.useNEE = useNEE;
                         pt.training = true;
                         pt.sTree = sTree;
                         pt.allocator = Allocator<>(buffers[tid]);
@@ -407,7 +412,7 @@ namespace akari::render {
                 pt.sampler = &sampler;
                 pt.scene = &scene;
                 pt.training = false;
-                pt.useNEE = false;
+                pt.useNEE = useNEE;
                 pt.sTree = sTree;
                 pt.allocator = Allocator<>(buffers[tid]);
                 pt.run_megakernel(&scene.camera.value(), p);

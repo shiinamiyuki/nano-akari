@@ -39,9 +39,10 @@ namespace akari::scene {
         P<Texture> metallic;
         P<Texture> roughness;
         P<Texture> emission;
+        P<Texture> transmission;
         Material();
         void commit() {}
-        AKR_SER(color, specular, metallic, roughness, emission)
+        AKR_SER(color, specular, metallic, roughness, emission, transmission)
     };
     struct Mesh {
         bool loaded = false;

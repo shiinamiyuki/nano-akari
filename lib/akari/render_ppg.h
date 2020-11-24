@@ -387,7 +387,7 @@ namespace akari::render {
         }
 
         void refine() {
-            spdlog::info("a = {}", selection_prob());
+            // spdlog::info("a = {}", selection_prob());
             AKR_CHECK(building.sum.value() >= 0.0f);
             //            building._build();
             sampling = building;

@@ -891,6 +891,7 @@ namespace akari::render {
         Texture roughness;
         Texture specular;
         Texture emission;
+        Texture transmission;
         Material() {}
         BSDF evaluate(Sampler &sampler, Allocator<> alloc, const SurfaceInteraction &si) const;
     };

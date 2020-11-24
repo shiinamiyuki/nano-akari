@@ -78,11 +78,14 @@ namespace akari::render {
         auto sp = si.sp();
         BSDF bsdf(Frame(si.ns, si.dpdu));
         auto m = metallic.evaluate_f(sp);
-        if (m < 1e-5f) {
+        auto tr = transmission.evaluate_f(sp);
+        if (tr > 1 - 1e-5f) {
+            bsdf.set_closure(FresnelSpecular(color.evaluate_s(sp), color.evaluate_s(sp), 1.0, 1.333));
+        } else if (m < 1e-5f) {
             bsdf.set_closure(DiffuseBSDF(color.evaluate_s(sp)));
-        }else if(m > 1 - 1e-5f){
+        } else if (m > 1 - 1e-5f) {
             bsdf.set_closure(SpecularReflection(color.evaluate_s(sp)));
-        }else{
+        } else {
             AKR_ASSERT(false);
         }
         return bsdf;
@@ -149,6 +152,7 @@ namespace akari::render {
             mat->color = create_tex(mat_node->color);
             mat->metallic = create_tex(mat_node->metallic);
             mat->emission = create_tex(mat_node->emission);
+            mat->transmission = create_tex(mat_node->transmission);
             mat_map.emplace(mat_node.get(), mat);
             scene->materials.emplace_back(mat);
             return mat;

@@ -30,11 +30,7 @@ namespace akari {
                     break;
                 }
                 while (lock_.load(std::memory_order_relaxed)) {
-#ifdef _MSC_VER
-                    _mm_pause();
-#elif defined(__GNUC__) || defined(__clang__)
-                    __builtin_ia32_pause();
-#endif
+                    std::this_thread::yield();
                 }
             }
         }

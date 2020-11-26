@@ -564,6 +564,10 @@ namespace akari::render {
         int max_depth = 5;
         int spp = 16;
     };
+    std::shared_ptr<STree> render_ppg(std::vector<std::pair<Array2D<Spectrum>, Spectrum>> &all_samples,
+                                      PPGConfig config, const Scene &scene);
     Image render_ppg(PPGConfig config, const Scene &scene);
+
+    std::shared_ptr<STree> bake_sdtree(PPGConfig config, const Scene &scene);
 
 } // namespace akari::render

@@ -279,14 +279,14 @@ namespace akari::render {
                     accumulate_beta(vertex->beta);
                     n_vertices++;
                     depth++;
-                    // if (depth > min_depth) {
-                    //     Float continue_prob = std::min<Float>(1.0, hmax(beta)) * 0.95;
-                    //     if (continue_prob > 0.0 && continue_prob < sampler->next1d()) {
-                    //         accumulate_beta(Spectrum(1.0 / continue_prob));
-                    //     } else {
-                    //         break;
-                    //     }
-                    // }
+                    if (depth > min_depth) {
+                        Float continue_prob = std::min<Float>(1.0, hmax(beta)) * 0.95;
+                        if (continue_prob > 0.0 && continue_prob > sampler->next1d()) {
+                            accumulate_beta(Spectrum(1.0 / continue_prob));
+                        } else {
+                            break;
+                        }
+                    }
                     ray = vertex->ray;
                     prev_vertex = PathVertex(*vertex);
                 }
@@ -323,11 +323,11 @@ namespace akari::render {
         }
         double ratio() const { return double(good.load()) / double(total.load()); }
     };
-    Image render_ppg(PPGConfig config, const Scene &scene) {
-        bool useNEE = true;
+    std::shared_ptr<STree> render_ppg(std::vector<std::pair<Array2D<Spectrum>, Spectrum>> &all_samples,
+                                      PPGConfig config, const Scene &scene) {
         std::shared_ptr<STree> sTree(new STree(scene.accel->world_bounds()));
+        bool useNEE = true;
         RatioStat non_zero_path;
-        std::vector<std::pair<Array2D<Spectrum>, Spectrum>> all_samples;
         std::vector<astd::pmr::monotonic_buffer_resource *> buffers;
         for (size_t i = 0; i < thread::num_work_threads(); i++) {
             buffers.emplace_back(new astd::pmr::monotonic_buffer_resource(astd::pmr::new_delete_resource()));
@@ -339,15 +339,15 @@ namespace akari::render {
         }
         uint32_t pass = 0;
         uint32_t accumulatedSamples = 0;
-        uint32_t trainingSamples = config.spp / 2;
-        uint32_t render_samples = config.spp - trainingSamples;
-        for (pass = 0; accumulatedSamples < trainingSamples; pass++) {
+        bool last_iter = false;
+        for (pass = 0; accumulatedSamples < config.spp; pass++) {
             non_zero_path.clear();
             size_t samples;
             samples = 1ull << pass;
             auto nextPassSamples = 2u << pass;
-            if (accumulatedSamples + samples + nextPassSamples > (uint32_t)trainingSamples) {
-                samples = (uint32_t)trainingSamples - accumulatedSamples;
+            if (accumulatedSamples + samples + nextPassSamples > (uint32_t)config.spp) {
+                samples = (uint32_t)config.spp - accumulatedSamples;
+                last_iter = true;
             }
             spdlog::info("Learning pass {}, spp:{}", pass + 1, samples);
             accumulatedSamples += samples;
@@ -369,7 +369,7 @@ namespace akari::render {
                         pt.sampler = &sampler;
                         pt.scene = &scene;
                         pt.useNEE = useNEE;
-                        pt.training = true;
+                        pt.training = !last_iter;
                         pt.sTree = sTree;
                         pt.allocator = Allocator<>(buffers[tid]);
                         pt.run_megakernel(&scene.camera.value(), p);
@@ -398,49 +398,19 @@ namespace akari::render {
             spdlog::info("non zero path:{}%", non_zero_path.ratio() * 100);
             sTree->refine(12000 * std::sqrt(samples));
         }
-        Film film(scene.camera->resolution());
-        Array2D<Spectrum> variance(scene.camera->resolution());
-        thread::parallel_for(thread::blocked_range<2>(film.resolution(), ivec2(16, 16)), [&](ivec2 id, uint32_t tid) {
-            auto Li = [&](const ivec2 p, Sampler &sampler) -> Spectrum {
-                ppg::GuidedPathTracer pt;
-                pt.min_depth = config.min_depth;
-                pt.max_depth = config.max_depth;
-                pt.n_vertices = 0;
-                pt.vertices = BufferView(
-                    Allocator<>(buffers[tid]).allocate_object<ppg::GuidedPathTracer::PPGVertex>(config.max_depth + 1),
-                    config.max_depth + 1);
-                pt.L = Spectrum(0.0);
-                pt.beta = Spectrum(1.0);
-                pt.sampler = &sampler;
-                pt.scene = &scene;
-                pt.training = false;
-                pt.useNEE = useNEE;
-                pt.sTree = sTree;
-                pt.allocator = Allocator<>(buffers[tid]);
-                pt.run_megakernel(&scene.camera.value(), p);
-                non_zero_path.accumluate(!is_black(pt.L));
-                buffers[tid]->release();
-                return pt.L;
-            };
-            Sampler &sampler = samplers[id.x + id.y * film.resolution().x];
-            VarianceTracker<Spectrum> var;
-            for (uint32_t s = 0; s < render_samples; s++) {
-                sampler.start_next_sample();
-                auto L = Li(id, sampler);
-                var.update(L);
-                film.add_sample(id, L, 1.0);
-            }
-            variance(id) = var.variance().value();
-        });
-        {
-            Spectrum avg_var = variance.sum() / hprod(variance.dimension());
-            all_samples.emplace_back(std::move(film.to_array2d()), avg_var);
-            spdlog::info("variance: {}", average(avg_var));
-        }
         for (auto buf : buffers) {
             delete buf;
         }
         spdlog::info("render ppg done");
+        return sTree;
+    }
+    std::shared_ptr<STree> bake_sdtree(PPGConfig config, const Scene &scene) {
+        std::vector<std::pair<Array2D<Spectrum>, Spectrum>> all_samples;
+        return render_ppg(all_samples, config, scene);
+    }
+    Image render_ppg(PPGConfig config, const Scene &scene) {
+        std::vector<std::pair<Array2D<Spectrum>, Spectrum>> all_samples;
+        auto sTree = render_ppg(all_samples, config, scene);
         Array2D<Spectrum> sum(scene.camera->resolution());
         double sum_weights = 0.0;
         {

@@ -74,6 +74,7 @@ namespace akari::render {
             const Scene *scene = nullptr;
             Sampler *sampler = nullptr;
             Spectrum L;
+            Spectrum emitter_direct;
             Spectrum beta = Spectrum(1.0f);
             Allocator<> allocator;
             int depth = 0;
@@ -130,6 +131,9 @@ namespace akari::render {
                               const std::optional<PathVertex> &prev_vertex) {
                 Spectrum I = beta * light->Le(wo, sp);
                 if (depth == 0 || BSDFType::Unset != (prev_vertex->sampled_lobe() & BSDFType::Specular)) {
+                    if (depth == 0) {
+                        emitter_direct = I;
+                    }
                     accumulate_radiance(I);
                 } else {
                     PointGeometry ref;
@@ -201,7 +205,7 @@ namespace akari::render {
                     depth++;
                     if (depth > min_depth) {
                         Float continue_prob = std::min<Float>(1.0, hmax(beta)) * 0.95;
-                        if (continue_prob < sampler->next1d()) {
+                        if (continue_prob > sampler->next1d()) {
                             accumulate_beta(Spectrum(1.0 / continue_prob));
                         } else {
                             break;
@@ -213,6 +217,22 @@ namespace akari::render {
             }
         };
     } // namespace pt
+
+    std::pair<Spectrum, Spectrum> render_pt_pixel_separete_emitter_direct(PTConfig config, Allocator<> allocator,
+                                                                          const Scene &scene, Sampler &sampler,
+                                                                          const vec2 &p_film) {
+        pt::GenericPathTracer pt;
+        pt.min_depth = config.min_depth;
+        pt.max_depth = config.max_depth;
+        pt.L = Spectrum(0.0);
+        pt.beta = Spectrum(1.0);
+        pt.sampler = &sampler;
+        pt.scene = &scene;
+        pt.allocator = allocator;
+        pt.run_megakernel(&scene.camera.value(), p_film);
+
+        return std::make_pair(pt.emitter_direct, pt.L);
+    }
     Film render_pt(PTConfig config, const Scene &scene) {
         Film film(scene.camera->resolution());
         std::vector<astd::pmr::monotonic_buffer_resource *> buffers;
@@ -220,23 +240,12 @@ namespace akari::render {
             buffers.emplace_back(new astd::pmr::monotonic_buffer_resource(astd::pmr::new_delete_resource()));
         }
         thread::parallel_for(thread::blocked_range<2>(film.resolution(), ivec2(16, 16)), [&](ivec2 id, uint32_t tid) {
-            auto Li = [&](const ivec2 p, Sampler &sampler) -> Spectrum {
-                pt::GenericPathTracer pt;
-                pt.min_depth = config.min_depth;
-                pt.max_depth = config.max_depth;
-                pt.L = Spectrum(0.0);
-                pt.beta = Spectrum(1.0);
-                pt.sampler = &sampler;
-                pt.scene = &scene;
-                pt.allocator = Allocator<>(buffers[tid]);
-                pt.run_megakernel(&scene.camera.value(), p);
-                buffers[tid]->release();
-                return pt.L;
-            };
             Sampler sampler = config.sampler;
             sampler.set_sample_index(id.y * film.resolution().x + id.x);
             for (int s = 0; s < config.spp; s++) {
-                auto L = Li(id, sampler);
+                sampler.start_next_sample();
+                auto L = render_pt_pixel(config, Allocator<>(buffers[tid]), scene, sampler, id);
+                buffers[tid]->release();
                 film.add_sample(id, L, 1.0);
             }
         });

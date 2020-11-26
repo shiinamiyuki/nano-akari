@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
         //     render::PTConfig config;
         //     config.min_depth = 4;
         //     config.max_depth = 7;
-        //     config.spp = 256;
+        //     config.spp = 4;
         //     config.sampler = render::PCGSampler();
         //     Allocator<> alloc;
         //     auto scene = render::create_scene(alloc, scene_graph);
@@ -49,15 +49,28 @@ int main(int argc, char **argv) {
         //     auto image = film.to_rgb_image();
         //     write_ldr(image, "out.png");
         // }
-        {
-            render::PPGConfig config;
+        // {
+        //     render::PPGConfig config;
+        //     config.min_depth = 4;
+        //     config.max_depth = 7;
+        //     config.spp = 2048;
+        //     config.sampler = render::PCGSampler();
+        //     Allocator<> alloc;
+        //     auto scene = render::create_scene(alloc, scene_graph);
+        //     auto image = render::render_ppg(config, *scene);
+        //     // auto image = film.to_rgb_image();
+        //     write_ldr(image, "out.png");
+        //     write_hdr(image, "out.exr");
+        // }
+         {
+            render::MLTConfig config;
             config.min_depth = 4;
             config.max_depth = 7;
-            config.spp = 2048;
-            config.sampler = render::PCGSampler();
+            config.spp = 64;
+            config.num_chains = 1024;
             Allocator<> alloc;
             auto scene = render::create_scene(alloc, scene_graph);
-            auto image = render::render_ppg(config, *scene);
+            auto image = render::render_mlt(config, *scene);
             // auto image = film.to_rgb_image();
             write_ldr(image, "out.png");
             write_hdr(image, "out.exr");

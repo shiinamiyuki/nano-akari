@@ -447,7 +447,113 @@ namespace akari::render {
         void start_next_sample() {}
         LCGSampler(uint64_t seed = 0u) : seed(seed) {}
     };
-    struct Sampler : Variant<LCGSampler, PCGSampler> {
+
+    struct MLTSampler {
+        struct PrimarySample {
+            Float value;
+            Float _backup;
+            uint64_t last_modification_iteration;
+            uint64_t last_modified_backup;
+
+            void backup() {
+                _backup = value;
+                last_modified_backup = last_modification_iteration;
+            }
+
+            void restore() {
+                value = _backup;
+                last_modification_iteration = last_modified_backup;
+            }
+        };
+        explicit MLTSampler(unsigned int seed) : rng(seed) {}
+        Rng rng;
+        std::vector<PrimarySample> X;
+        uint64_t current_iteration = 0;
+        bool large_step = true;
+        uint64_t last_large_step = 0;
+        Float large_step_prob = 0.25;
+        uint32_t sample_index = 0;
+        uint64_t accepts = 0, rejects = 0;
+        Float uniform() { return rng.uniform_float(); }
+        void start_next_sample() {
+            sample_index = 0;
+            current_iteration++;
+            large_step = uniform() < large_step_prob;
+        }
+        void set_sample_index(uint64_t idx) { AKR_PANIC("shouldn't be called"); }
+        Float next1d() {
+            if (sample_index >= X.size()) {
+                X.resize(sample_index + 1u);
+            }
+            auto &Xi = X[sample_index];
+            mutate(Xi, sample_index);
+            sample_index += 1;
+            return Xi.value;
+        }
+        double mutate(double x, double s1, double s2) {
+            double r = uniform();
+            if (r < 0.5) {
+                r = r * 2.0;
+                x = x + s2 * exp(-log(s2 / s1) * r);
+                if (x > 1.0)
+                    x -= 1.0;
+            } else {
+                r = (r - 0.5) * 2.0;
+                x = x - s2 * exp(-log(s2 / s1) * r);
+                if (x < 0.0)
+                    x += 1.0;
+            }
+            return x;
+        }
+        void mutate(PrimarySample &Xi, int sampleIndex) {
+            double s1, s2;
+            s1 = 1.0 / 1024.0, s2 = 1.0 / 64.0;
+
+            if (Xi.last_modification_iteration < last_large_step) {
+                Xi.value = uniform();
+                Xi.last_modification_iteration = last_large_step;
+            }
+
+            if (large_step) {
+                Xi.backup();
+                Xi.value = uniform();
+            } else {
+                int64_t nSmall = current_iteration - Xi.last_modification_iteration;
+
+                auto nSmallMinus = nSmall - 1;
+                if (nSmallMinus > 0) {
+                    auto x = Xi.value;
+                    while (nSmallMinus > 0) {
+                        nSmallMinus--;
+                        x = mutate(x, s1, s2);
+                    }
+                    Xi.value = x;
+                    Xi.last_modification_iteration = current_iteration - 1;
+                }
+                Xi.backup();
+                Xi.value = mutate(Xi.value, s1, s2);
+            }
+
+            Xi.last_modification_iteration = current_iteration;
+        }
+        void accept() {
+            if (large_step) {
+                last_large_step = current_iteration;
+            }
+            accepts++;
+        }
+
+        void reject() {
+            for (PrimarySample &Xi : X) {
+                if (Xi.last_modification_iteration == current_iteration) {
+                    Xi.restore();
+                }
+            }
+            rejects++;
+            --current_iteration;
+        }
+    };
+    struct Sampler : Variant<LCGSampler, PCGSampler, MLTSampler> {
         using Variant::Variant;
         Sampler() : Sampler(PCGSampler()) {}
         Float next1d() { AKR_VAR_DISPATCH(next1d); }
@@ -455,43 +561,57 @@ namespace akari::render {
         void start_next_sample() { AKR_VAR_DISPATCH(start_next_sample); }
         void set_sample_index(uint64_t idx) { AKR_VAR_DISPATCH(set_sample_index, idx); }
     };
-    template <class T>
-    struct TFilm {
-        Array2D<T> radiance;
+
+    struct Film {
+        Array2D<Spectrum> radiance;
+        Array2D<std::array<AtomicFloat, Spectrum::size>> splats;
         Array2D<Float> weight;
-        explicit TFilm(const ivec2 &dimension) : radiance(dimension), weight(dimension) {}
-        void add_sample(const ivec2 &p, const T &sample, Float weight_) {
+        explicit Film(const ivec2 &dimension) : radiance(dimension), weight(dimension), splats(dimension) {}
+        void add_sample(const ivec2 &p, const Spectrum &sample, Float weight_) {
             weight(p) += weight_;
             radiance(p) += sample;
         }
+        void splat(const ivec2 &p, const Spectrum &sample) {
+            for (size_t i = 0; i < Spectrum::size; i++) {
+                splats(p)[i].add(sample[i]);
+            }
+        }
         [[nodiscard]] ivec2 resolution() const { return radiance.dimension(); }
-        Array2D<T> to_array2d() const {
-            Array2D<T> array(resolution());
+        Array2D<Spectrum> to_array2d() const {
+            Array2D<Spectrum> array(resolution());
             thread::parallel_for(resolution().y, [&](uint32_t y, uint32_t) {
                 for (int x = 0; x < resolution().x; x++) {
+                    Spectrum splat_s;
+                    for (size_t i = 0; i < Spectrum::size; i++) {
+                        splat_s[i] = splats(x, y)[i].value();
+                    }
                     if (weight(x, y) != 0) {
                         auto color = (radiance(x, y)) / weight(x, y);
-                        array(x, y) = color;
+                        array(x, y) = color + splat_s;
                     } else {
                         auto color = radiance(x, y);
-                        array(x, y) = color;
+                        array(x, y) = color + splat_s;
                     }
                 }
             });
             return array;
         }
-        template <typename = std::enable_if_t<std::is_same_v<T, Color3f>>>
+        template <typename = std::enable_if_t<std::is_same_v<Spectrum, Color3f>>>
         Image to_rgb_image() const {
             Image image = rgb_image(resolution());
             thread::parallel_for(resolution().y, [&](uint32_t y, uint32_t) {
                 for (int x = 0; x < resolution().x; x++) {
+                    Spectrum splat_s;
+                    for (size_t i = 0; i < Spectrum::size; i++) {
+                        splat_s[i] = splats(x, y)[i].value();
+                    }
                     if (weight(x, y) != 0) {
-                        auto color = (radiance(x, y)) / weight(x, y);
+                        auto color = (radiance(x, y)) / weight(x, y) + splat_s;
                         image(x, y, 0) = color[0];
                         image(x, y, 1) = color[1];
                         image(x, y, 2) = color[2];
                     } else {
-                        auto color = radiance(x, y);
+                        auto color = radiance(x, y) + splat_s;
                         image(x, y, 0) = color[0];
                         image(x, y, 1) = color[1];
                         image(x, y, 2) = color[2];
@@ -501,7 +621,6 @@ namespace akari::render {
             return image;
         }
     };
-    using Film = TFilm<Spectrum>;
     struct CameraSample {
         vec2 p_lens;
         vec2 p_film;
@@ -1068,6 +1187,16 @@ namespace akari::render {
     };
     Film render_pt(PTConfig config, const Scene &scene);
 
+    // separate emitter direct hit
+    // useful for MLT
+    std::pair<Spectrum, Spectrum> render_pt_pixel_separete_emitter_direct(PTConfig config, Allocator<>,
+                                                                          const Scene &scene, Sampler &sampler,
+                                                                          const vec2 &p_film);
+    inline Spectrum render_pt_pixel(PTConfig config, Allocator<> allocator, const Scene &scene, Sampler &sampler,
+                             const vec2 &p_film) {
+        auto [_, rest] = render_pt_pixel_separete_emitter_direct(config, allocator, scene, sampler, p_film);
+        return rest;
+    }
     struct SMSConfig {
         Sampler sampler;
         int min_depth = 3;
@@ -1085,4 +1214,13 @@ namespace akari::render {
     };
 
     Film render_bdpt(PTConfig config, const Scene &scene);
+
+    struct MLTConfig {
+        int num_bootstrap = 100000;
+        int num_chains = 1024;
+        int min_depth = 3;
+        int max_depth = 5;
+        int spp = 16;
+    };
+    Image render_mlt(MLTConfig config, const Scene &scene);
 } // namespace akari::render

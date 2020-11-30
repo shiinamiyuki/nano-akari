@@ -16,7 +16,7 @@
 #include <akari/render.h>
 namespace akari::render::mlt {
     struct RadianceRecord {
-        vec2 p_film;
+        ivec2 p_film;
         std::pair<Spectrum, Spectrum> radiance;
     };
     struct MarkovChain {

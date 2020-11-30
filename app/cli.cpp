@@ -66,11 +66,11 @@ int main(int argc, char **argv) {
             render::MLTConfig config;
             config.min_depth = 4;
             config.max_depth = 7;
-            config.spp = 64;
+            config.spp = 1;
             config.num_chains = 1024;
             Allocator<> alloc;
             auto scene = render::create_scene(alloc, scene_graph);
-            auto image = render::render_mlt(config, *scene);
+            auto image = render::render_smcmc(config, *scene);
             // auto image = film.to_rgb_image();
             write_ldr(image, "out.png");
             write_hdr(image, "out.exr");

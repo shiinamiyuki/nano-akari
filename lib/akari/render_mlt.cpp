@@ -78,7 +78,7 @@ namespace akari::render {
         Film film(scene.camera->resolution());
         spdlog::info("{} {}", b, mutations_per_chain);
         std::atomic_uint64_t accepts(0), rejects(0);
-        AtomicFloat acc_b(0.0f);
+        AtomicDouble acc_b(0.0f);
         std::atomic_uint64_t n_large(0);
         thread::parallel_for(config.num_chains, [&](uint32_t id, uint32_t tid) {
             astd::pmr::monotonic_buffer_resource resource;
@@ -126,7 +126,7 @@ namespace akari::render {
                 resource.release();
             }
         });
-        b = (b + (acc_b.value() / n_large.load())) * 0.5;
+        b = (b * config.num_bootstrap + acc_b.value()) / (config.num_bootstrap + n_large.load());
         spdlog::info("acceptance rate:{}%", accepts * 100 / (accepts + rejects));
         auto array = film.to_array2d();
         array *= Spectrum(b);

@@ -37,14 +37,14 @@ namespace akari {
 
         void unlock() { lock_.store(false, std::memory_order_release); }
     };
-    class AtomicFloat {
-        std::atomic<float> val;
+    template<class Float>
+    class TAtomicFloat {
+        std::atomic<Float> val;
 
       public:
-        using Float = float;
-        explicit AtomicFloat(Float v = 0) : val(v) {}
+        explicit TAtomicFloat(Float v = 0) : val(v) {}
 
-        AtomicFloat(const AtomicFloat &rhs) : val((float)rhs.val) {}
+        TAtomicFloat(const TAtomicFloat &rhs) : val((Float)rhs.val) {}
 
         void add(Float v) {
             auto current = val.load();
@@ -52,12 +52,14 @@ namespace akari {
             }
         }
 
-        [[nodiscard]] float value() const { return val.load(); }
+        [[nodiscard]] Float value() const { return val.load(); }
 
-        explicit operator float() const { return value(); }
+        explicit operator Float() const { return value(); }
 
         void set(Float v) { val = v; }
     };
+    using AtomicFloat = TAtomicFloat<float>;
+    using AtomicDouble = TAtomicFloat<double>;
     namespace thread {
         template <int N>
         struct BlockedDim {

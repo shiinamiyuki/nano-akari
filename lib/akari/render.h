@@ -553,7 +553,24 @@ namespace akari::render {
             --current_iteration;
         }
     };
-    struct Sampler : Variant<LCGSampler, PCGSampler, MLTSampler> {
+
+    struct ReplaySampler {
+        explicit ReplaySampler(astd::pmr::vector<Float> Xs, Rng rng) : rng(rng), Xs(std::move(Xs)) {}
+        Float next1d() {
+            if (idx < Xs.size()) {
+                return Xs[idx++];
+            }
+            idx++;
+            return rng.uniform_float();
+        }
+        void start_next_sample() { idx = 0; }
+        void set_sample_index(uint64_t idx){}
+      private:
+        uint32_t idx = 0;
+        Rng rng;
+        astd::pmr::vector<Float> Xs;
+    };
+    struct Sampler : Variant<LCGSampler, PCGSampler, MLTSampler, ReplaySampler> {
         using Variant::Variant;
         Sampler() : Sampler(PCGSampler()) {}
         Float next1d() { AKR_VAR_DISPATCH(next1d); }
@@ -1193,7 +1210,7 @@ namespace akari::render {
                                                                           const Scene &scene, Sampler &sampler,
                                                                           const vec2 &p_film);
     inline Spectrum render_pt_pixel(PTConfig config, Allocator<> allocator, const Scene &scene, Sampler &sampler,
-                             const vec2 &p_film) {
+                                    const vec2 &p_film) {
         auto [_, rest] = render_pt_pixel_separete_emitter_direct(config, allocator, scene, sampler, p_film);
         return rest;
     }
@@ -1223,4 +1240,5 @@ namespace akari::render {
         int spp = 16;
     };
     Image render_mlt(MLTConfig config, const Scene &scene);
+    Image render_smcmc(MLTConfig config, const Scene &scene);
 } // namespace akari::render

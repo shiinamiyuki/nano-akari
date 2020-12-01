@@ -23,7 +23,7 @@ namespace akari::render {
         PTConfig pt_config;
         pt_config.max_depth = config.max_depth;
         pt_config.min_depth = config.min_depth;
-        auto T = [](const std::pair<Spectrum, Spectrum> &s) { return hmax(s.second - s.first * 0.95); };
+        auto T = [](const Spectrum &s) { return hmax(s); };
         std::vector<MarkovChain> chains;
         Float b = 0.0;
         {
@@ -48,7 +48,7 @@ namespace akari::render {
                     sampler.start_next_sample();
                     ivec2 p_film = glm::min(scene.camera->resolution() - 1,
                                             ivec2(sampler.next2d() * vec2(scene.camera->resolution())));
-                    auto L = render_pt_pixel_separete_emitter_direct(pt_config, Allocator<>(&resource), scene, sampler,
+                    auto L = render_pt_pixel_wo_emitter_direct(pt_config, Allocator<>(&resource), scene, sampler,
                                                                      p_film);
                     // spdlog::info("{} {}", p_film[0], p_film[1]);
                     // spdlog::info("{}", T(L));
@@ -64,7 +64,7 @@ namespace akari::render {
                 chain.sampler.start_next_sample();
                 ivec2 p_film = glm::min(scene.camera->resolution() - 1,
                                         ivec2(chain.sampler.next2d() * vec2(scene.camera->resolution())));
-                auto L = render_pt_pixel_separete_emitter_direct(pt_config, Allocator<>(&resource), scene,
+                auto L = render_pt_pixel_wo_emitter_direct(pt_config, Allocator<>(&resource), scene,
                                                                  chain.sampler, p_film);
                 AKR_ASSERT(T(L) > 0.0);
                 chain.current = RadianceRecord{p_film, L};
@@ -90,7 +90,7 @@ namespace akari::render {
                 chain.sampler.start_next_sample();
                 const ivec2 p_film = glm::min(scene.camera->resolution() - 1,
                                               ivec2(chain.sampler.next2d() * vec2(scene.camera->resolution())));
-                const auto L = render_pt_pixel_separete_emitter_direct(pt_config, Allocator<>(&resource), scene,
+                const auto L = render_pt_pixel_wo_emitter_direct(pt_config, Allocator<>(&resource), scene,
                                                                        chain.sampler, p_film);
 
                 const RadianceRecord proposal{p_film, L};
@@ -110,9 +110,9 @@ namespace akari::render {
 
                 // spdlog::info("{} {}", T(L), weight1);
                 if (weight1 > 0 && std::isfinite(weight1))
-                    film.splat(proposal.p_film, proposal.radiance.second * weight1 / config.spp);
+                    film.splat(proposal.p_film, proposal.radiance * weight1 / config.spp);
                 if (weight2 > 0 && std::isfinite(weight2))
-                    film.splat(chain.current.p_film, chain.current.radiance.second * weight2 / config.spp);
+                    film.splat(chain.current.p_film, chain.current.radiance * weight2 / config.spp);
 
                 if (accept == 1.0 || rng.uniform_float() < accept) {
                     mlt_sampler.accept();

@@ -17,7 +17,7 @@
 namespace akari::render::mlt {
     struct RadianceRecord {
         ivec2 p_film;
-        std::pair<Spectrum, Spectrum> radiance;
+        Spectrum radiance;
     };
     struct MarkovChain {
         explicit MarkovChain(MLTSampler sampler):sampler(sampler){}

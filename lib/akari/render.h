@@ -564,7 +564,8 @@ namespace akari::render {
             return rng.uniform_float();
         }
         void start_next_sample() { idx = 0; }
-        void set_sample_index(uint64_t idx){}
+        void set_sample_index(uint64_t idx) {}
+
       private:
         uint32_t idx = 0;
         Rng rng;
@@ -1209,6 +1210,11 @@ namespace akari::render {
     std::pair<Spectrum, Spectrum> render_pt_pixel_separete_emitter_direct(PTConfig config, Allocator<>,
                                                                           const Scene &scene, Sampler &sampler,
                                                                           const vec2 &p_film);
+    inline Spectrum render_pt_pixel_wo_emitter_direct(PTConfig config, Allocator<> allocator, const Scene &scene,
+                                                      Sampler &sampler, const vec2 &p_film) {
+        auto [_, rest] = render_pt_pixel_separete_emitter_direct(config, allocator, scene, sampler, p_film);
+        return _ - rest;
+    }
     inline Spectrum render_pt_pixel(PTConfig config, Allocator<> allocator, const Scene &scene, Sampler &sampler,
                                     const vec2 &p_film) {
         auto [_, rest] = render_pt_pixel_separete_emitter_direct(config, allocator, scene, sampler, p_film);

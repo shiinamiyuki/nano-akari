@@ -28,6 +28,7 @@ namespace akari::render {
             TileEstimator mcmc_estimate, mc_estimate;
             CoherentSamples current;
             uint32_t n_mc_estimates = 0;
+            double b = 0.0;
         };
     } // namespace smcmc
     Image render_smcmc(MLTConfig config, const Scene &scene) {
@@ -109,6 +110,14 @@ namespace akari::render {
                 }
             }
         }
+        auto pixel_estimator = [&](const Tile &state, const TileEstimator &sample, const ivec2 &p) -> Spectrum {
+            for (int i = 0; i < 5; i++) {
+                if (glm::all(glm::equal(state.p_center + offsets[i], p))) {
+                    return sample[i].radiance;
+                }
+            }
+            AKR_ASSERT(false);
+        };
         auto estimator = [&](const Tile &state, const CoherentSamples &sample) -> TileEstimator {
             TileEstimator G;
             for (auto &X : sample) {
@@ -206,35 +215,33 @@ namespace akari::render {
                 a = ab;
                 b = ba;
 
-                a.current.radiance = estimator(ab, Lab);
-                a.current.Ts = Tab;
-
-                b.current.radiance = estimator(ba, Lba);
-                b.current.Ts = Tba;
+                a.current = Lab;
+                b.current = Lba;
             }
         };
         auto independent_mcmc = [&](Allocator<> alloc, Tile &s) {
             std::uniform_real_distribution<Float> dist;
             const auto L = run_mcmc2(alloc, s);
             const auto Tnew = Ts(L);
-            const auto accept = std::clamp<Float>(Tnew / s.current.Ts, 0.0, 1.0);
+            const auto accept = std::clamp<Float>(Tnew / Ts(s.current), 0.0, 1.0);
             auto mlt_sampler = s.sampler->get<MLTSampler>();
             if (mlt_sampler->large_step) {
-                acc_b.add(T(estimator(s, L)));
+                acc_b.add(Ts(L));
                 n_large++;
-                s.mc_estimate += estimator(s, L);
+                splat_mc(s, L, 1.0);
                 s.n_mc_estimates++;
             }
             if (accept > 0) {
-                film.splat(s.p_center, estimator(s, L) * accept / Tnew);
+                // film.splat(s.p_center, estimator(s, L) * accept / Tnew);
+                splat(s, L, accept / Tnew);
             }
             if (1.0 - accept > 0) {
-                film.splat(s.p_center, s.current.radiance * (1.0 - accept) / s.current.Ts);
+                // film.splat(s.p_center, s.current.radiance * (1.0 - accept) / s.current.Ts);
+                splat(s, s.current, (1.0 - accept) / Ts(s.current));
             }
             if (dist(rd) < accept) {
                 mlt_sampler->accept();
-                s.current.radiance = estimator(s, L);
-                s.current.Ts = Tnew;
+                s.current = L;
             } else {
                 mlt_sampler->reject();
             }
@@ -267,31 +274,88 @@ namespace akari::render {
             //     }
             // }
         }
-        auto unscaled = film.to_array2d();
         const auto b = acc_b.value() / n_large.load();
 
+        const auto alpha = 0.05;
+        const auto beta1 = 0.05, beta2 = 0.5;
+        auto for_each_overlapped_tile = [&](const Tile &s, auto &&F) {
+            for (int x = std::max(0, s.p_center.x - 1); x <= std::min(tiles.dimension().x - 1, s.p_center.x + 1); x++) {
+                for (int y = std::max(0, s.p_center.y - 1); y <= std::min(tiles.dimension().y - 1, s.p_center.y + 1);
+                     y++) {
+                    if (x != s.p_center.x && y != s.p_center.y) {
+                        F(tiles(x, y));
+                    }
+                }
+            }
+        };
+        auto in_tile = [&](const Tile &s, ivec2 p) {
+            for (auto &offset : offsets) {
+                if (glm::all(glm::equal(offset + s.p_center, p))) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        auto for_each_overlapped_pixel = [&](const Tile &s, const Tile &t, auto &&F) {
+            ivec2 lo(std::min(s.p_center.x - 1, t.p_center.x - 1), std::min(s.p_center.y - 1, t.p_center.y - 1));
+            ivec2 hi(std::max(s.p_center.x + 1, t.p_center.x + 1), std::max(s.p_center.y + 1, t.p_center.y + 1));
+            lo = glm::max(lo, ivec2(0));
+            hi = glm::min(hi, tiles.dimension() - ivec2(1));
+            for (int x = lo.x; x < hi.x; x++) {
+                for (int y = lo.y; y < hi.y; y++) {
+                    auto p = ivec2(x, y);
+                    if (in_tile(s, p) && in_tile(t, p)) {
+                        F(p);
+                    }
+                }
+            }
+        };
+        auto average_tile_mcmc = [=](const Tile &s) {
+            double avg = 0.0;
+            for (auto &r : s.mcmc_estimate) {
+                avg += T(r.radiance);
+            }
+            avg /= s.mcmc_estimate.size();
+            return avg;
+        };
+        auto average_tile_mc = [=](const Tile &s) {
+            double avg = 0.0;
+            for (auto &r : s.mc_estimate) {
+                avg += T(r.radiance);
+            }
+            avg /= s.mc_estimate.size();
+            return avg;
+        };
+        const auto Fst = [&](const Tile &s, const Tile &t, const ivec2 &k) {
+            return 0.5 * (T(pixel_estimator(t, t.mcmc_estimate, k)) - T(pixel_estimator(s, s.mcmc_estimate, k)));
+        };
+        const auto e = [&](const Tile &s) {
+            auto val = alpha * s.b * (average_tile_mcmc(s) - average_tile_mc(s));
+            for_each_overlapped_tile(s, [&](const Tile &t) {
+                for_each_overlapped_pixel(s, t, [&](const ivec2 &k) { val += Fst(s, t, k); });
+            });
+            return val;
+        };
+        const auto w1 = [=](const Tile &s, int n) { return 1.0 / (e(s) + beta1 * std::pow(beta2, n)); };
+        const auto w2 = [=](const Tile &s, const Tile &t, int n) { return std::min(w1(s, n), w1(t, n)); };
         // reconstruction
         thread::parallel_for(thread::blocked_range<2>(tiles.dimension(), ivec2(16, 16)), [&](ivec2 id, uint32_t tid) {
-            auto &state = tiles(id);
-            Allocator<> alloc(buffers[tid]);
-            const auto mc_estimate = T(state.mc_estimate) / state.n_mc_estimates;
-            const auto bsGs = unscaled(id);
-            auto O = [&](const Tile &s, const Tile &t) -> astd::pmr::vector<std::array<ivec2, 2>> {
-                auto overlapped = astd::pmr::vector<std::array<ivec2, 2>>(alloc);
+            // auto &state = tiles(id);
+            // Allocator<> alloc(buffers[tid]);
+            // const auto mc_estimate = T(state.mc_estimate) / state.n_mc_estimates;
+            // const auto bsGs = unscaled(id);
+            // auto O = [&](const Tile &s, const Tile &t) -> astd::pmr::vector<std::array<ivec2, 2>> {
+            //     auto overlapped = astd::pmr::vector<std::array<ivec2, 2>>(alloc);
 
-                return overlapped;
-            };
+            //     return overlapped;
+            // };
 
-            for (int n = 0; n < 1000; n++) {
-                const auto alpha = 0.05;
-                const auto beta1 = 0.05, beta2 = 0.5;
-                const auto w = [](const Tile &s) {
+            // for (int n = 0; n < 1000; n++) {
 
-                };
-                const auto mc_estimate = [&](const Tile &s) { return T(s.mc_estimate) / s.n_mc_estimates; };
-                const auto e = [&](const Tile &s) { return alpha * (unscaled(s.p_center), mc_estimate(s)); };
-            }
-            buffers[tid]->release();
+            //     const auto mc_estimate = [&](const Tile &s) { return T(s.mc_estimate) / s.n_mc_estimates; };
+            //     const auto e = [&](const Tile &s) { return alpha * (unscaled(s.p_center), mc_estimate(s)); };
+            // }
+            // buffers[tid]->release();
         });
 
         for (auto buf : buffers) {

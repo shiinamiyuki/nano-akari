@@ -66,7 +66,7 @@ int main(int argc, char **argv) {
             render::MLTConfig config;
             config.min_depth = 4;
             config.max_depth = 7;
-            config.spp = 1;
+            config.spp = 64;
             config.num_chains = 1024;
             Allocator<> alloc;
             auto scene = render::create_scene(alloc, scene_graph);

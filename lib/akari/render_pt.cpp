@@ -230,7 +230,7 @@ namespace akari::render {
         pt.scene = &scene;
         pt.allocator = allocator;
         pt.run_megakernel(&scene.camera.value(), p_film);
-
+        AKR_ASSERT(hmax(pt.L) >= 0.0 && hmax(pt.emitter_direct) >= 0.0);
         return std::make_pair(pt.emitter_direct, pt.L);
     }
     Film render_pt(PTConfig config, const Scene &scene) {

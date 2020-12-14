@@ -1213,7 +1213,7 @@ namespace akari::render {
     inline Spectrum render_pt_pixel_wo_emitter_direct(PTConfig config, Allocator<> allocator, const Scene &scene,
                                                       Sampler &sampler, const vec2 &p_film) {
         auto [_, rest] = render_pt_pixel_separete_emitter_direct(config, allocator, scene, sampler, p_film);
-        return _ - rest;
+        return rest - _;
     }
     inline Spectrum render_pt_pixel(PTConfig config, Allocator<> allocator, const Scene &scene, Sampler &sampler,
                                     const vec2 &p_film) {

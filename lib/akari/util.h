@@ -41,7 +41,7 @@ namespace akari {
     template <class T = astd::byte>
     using Allocator = astd::pmr::polymorphic_allocator<T>;
     template <typename T, typename... Ts>
-    std::shared_ptr<T> make_pmr_shared(Allocator<> alloc, Ts &&...args) {
+    std::shared_ptr<T> make_pmr_shared(Allocator<> alloc, Ts &&... args) {
         return std::shared_ptr<T>(alloc.new_object<T>(std::forward<Ts>(args)...), [=](T *p) mutable {
             alloc.destroy(p);
             alloc.deallocate_object(const_cast<std::remove_const_t<T> *>(p), 1);
@@ -309,8 +309,8 @@ namespace akari {
         Matrix2() { m = glm::identity<Mat<T, 2>>(); }
         Matrix2(T x00, T x01, T x10, T x11) { m = Mat<T, 2>(x00, x10, x01, x11); }
         Matrix2 inverse() const { return Matrix2(glm::inverse(m)); }
-        Vector<T, 2> operator*(const Vector<T, 2> &v)const { return m * v; }
-        Matrix2<T> operator*(const Matrix2<T> &n)const { return Matrix2(m * n.m); }
+        Vector<T, 2> operator*(const Vector<T, 2> &v) const { return m * v; }
+        Matrix2<T> operator*(const Matrix2<T> &n) const { return Matrix2(m * n.m); }
         T &operator()(int i, int j) { return m[j][i]; }
         const T &operator()(int i, int j) const { return m[j][i]; }
         Float determinant() const { return glm::determinant(m); }
@@ -484,6 +484,19 @@ namespace akari {
 namespace akari {
     using namespace glm;
     namespace astd {
+        template <class To, class From>
+        typename std::enable_if_t<
+            sizeof(To) == sizeof(From) && std::is_trivially_copyable_v<From> && std::is_trivially_copyable_v<To>, To>
+        // constexpr support needs compiler magic
+        bit_cast(const From &src) noexcept {
+            static_assert(std::is_trivially_constructible_v<To>,
+                          "This implementation additionally requires destination type to be trivially constructible");
+
+            To dst;
+            std::memcpy(&dst, &src, sizeof(To));
+            return dst;
+        }
+
         inline constexpr size_t max(size_t a, size_t b) { return a < b ? b : a; }
         template <typename T1, typename T2>
         struct alignas(astd::max(alignof(T1), alignof(T2))) pair {
@@ -547,7 +560,7 @@ namespace akari {
                 return *this;
             }
             template <typename... Ts>
-            AKR_CPU void emplace(Ts &&...args) {
+            AKR_CPU void emplace(Ts &&... args) {
                 reset();
                 new (ptr()) T(std::forward<Ts>(args)...);
                 set = true;

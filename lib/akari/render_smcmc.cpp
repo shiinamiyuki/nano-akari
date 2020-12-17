@@ -143,6 +143,14 @@ namespace akari::render {
         }
 
         Array2D<Tile> tiles(scene.camera->resolution());
+        thread::parallel_for(thread::blocked_range<2>(tiles.dimension(), ivec2(16, 16)), [&](ivec2 id, uint32_t tid) {
+            auto &s = tiles(id);
+            for (int i = 0; i < 5; i++) {
+                s.mcmc_estimate[i].p_film = id + offsets[i];
+                s.mc_estimate[i].p_film = id + offsets[i];
+                s.p_center = id;
+            }
+        });
         {
             std::uniform_int_distribution<uint32_t> dist;
             astd::pmr::monotonic_buffer_resource resource;
@@ -239,12 +247,14 @@ namespace akari::render {
         auto splat = [&](Tile &a, const CoherentSamples &Xs, Float weight) {
             auto G = estimator(a, Xs);
             for (int i = 0; i < 5; i++) {
+                AKR_ASSERT(glm::all(glm::equal(G[i].p_film, a.mcmc_estimate[i].p_film)));
                 a.mcmc_estimate[i].radiance += G[i].radiance * weight;
             }
         };
         auto splat_mc = [&](Tile &a, const CoherentSamples &Xs, Float weight) {
             auto G = estimator(a, Xs);
             for (int i = 0; i < 5; i++) {
+                AKR_ASSERT(glm::all(glm::equal(G[i].p_film, a.mc_estimate[i].p_film)));
                 a.mc_estimate[i].radiance += G[i].radiance * weight;
             }
         };
@@ -418,14 +428,14 @@ namespace akari::render {
         error.fill(0);
         thread::parallel_for(thread::blocked_range<2>(tiles.dimension(), ivec2(16, 16)), [&](ivec2 id, uint32_t tid) {
             auto &s = tiles(id);
-            s.b = b;
+            s.b = average_tile_mc(s);
         });
         auto bs = rgb_image(tiles.dimension());
         auto mcmc = rgb_image(tiles.dimension());
         auto inc_bs = rgb_image(tiles.dimension());
         Array2D<double> new_b(tiles.dimension());
         new_b.fill(b);
-        for (int n = 0; n < 128; n++) {
+        for (int n = 0; n < 1000; n++) {
             if (n % 50 == 0) {
                 spdlog::info("updating error");
                 thread::parallel_for( //
@@ -454,7 +464,10 @@ namespace akari::render {
                     if (std::isfinite(inc_b)) {
                         // printf("%f %f\n", inc_b * inc_b_denom, inc_b_denom);
                         new_b(id) = s.b + inc_b;
+                    } else {
+                        new_b(id) = s.b;
                     }
+                    new_b(id) = std::max(new_b(id), 0.0);
                     inc_bs(id, 1) = inc_b_denom;
                 });
             if (n % 50 == 0)
@@ -487,38 +500,6 @@ namespace akari::render {
             });
         write_hdr(unscaled, "unscaled.exr");
         write_hdr(mc, "mc.exr");
-        // thread::parallel_for(thread::blocked_range<2>(tiles.dimension(), ivec2(16, 16)), [&](ivec2 id, uint32_t tid)
-        // {
-        //     auto &s = tiles(id);
-        //     s.b = b;
-        //     for (int n = 0; n < 16; n++) {
-        //         double inc_b = 0.0;
-        //         double inc_b_denom = 0.0;
-        //         inc_b += alpha * w1(s, n) * (average_tile_mc(s) - average_tile_mcmc(s));
-        //         inc_b_denom += alpha * w1(s, n) * average_tile_unscaled_mcmc(s);
-
-        //         for_each_overlapped_tile(s, [&](const Tile &t) {
-        //             auto w_st = w2(s, t, n);
-        //             for_each_overlapped_pixel(s, t, [&](const ivec2 &k) {
-        //                 inc_b += w_st * Fst(s, t, k);
-        //                 inc_b_denom += w_st * T(pixel_estimator(t, t.mcmc_estimate, k));
-        //             });
-        //         });
-
-        //         if (inc_b != 0.0) {
-        //             AKR_ASSERT(inc_b_denom != 0.0);
-        //             s.b += inc_b / inc_b_denom;
-        //         } else {
-        //             break;
-        //         }
-        //         // printf("b=%f iter=%d\n", s.b, n);
-        //     }
-        //     auto I = pixel_estimator(s, s.mcmc_estimate, s.p_center) * s.b;
-        //     for (int i = 0; i < 3; i++) {
-        //         output(id, i) = I[i];
-        //     }
-        // });
-
         for (auto buf : buffers) {
             delete buf;
         }

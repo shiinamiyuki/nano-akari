@@ -564,7 +564,7 @@ namespace akari::render {
             return rng.uniform_float();
         }
         void start_next_sample() { idx = 0; }
-        void set_sample_index(uint64_t idx) {}
+        void set_sample_index(uint64_t) {}
 
       private:
         uint32_t idx = 0;
